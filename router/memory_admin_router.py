@@ -21,7 +21,7 @@ from src.app.plugin_system.base import BaseRouter
 from ..config import EngramMemoryConfig
 from ..service.memory_service import MemoryService
 from ..service.person_service import PersonService
-from ..store import shared_repo
+from ..store import shared_repo, shared_store
 
 if TYPE_CHECKING:
     from src.app.plugin_system.base import BasePlugin
@@ -419,3 +419,17 @@ class MemoryAdminRouter(BaseRouter):
                 for pid, item in sorted(agg.items(), key=lambda kv: -sum(kv[1].values()))
             ][: int(limit)]
             return {"ok": True, "persons": persons}
+
+        @app.post("/api/persons/distill")
+        async def distill_person_endpoint(
+            person_id: str = Query(..., description="人物原始 ID（platform:user_id）"),
+        ) -> dict[str, Any]:
+            """手动强制蒸馏某个人物的印象（无视消息数门槛）。"""
+            from ..service.persona_distiller import distill_person
+
+            config = self._get_config()
+            store = shared_store(self.plugin, lambda: self._get_config())
+            result = await distill_person(
+                self.plugin, store, config, person_id, force=True
+            )
+            return {"ok": bool(result.get("ok")), **result}

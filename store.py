@@ -158,3 +158,37 @@ class MemoryStore:
                 self._get_anchors_path(),
                 json.dumps(anchors, ensure_ascii=False, indent=2),
             )
+
+    def _get_distill_path(self) -> Path:
+        """返回人物蒸馏元数据文件路径。"""
+        config = self._config_factory()
+        data_dir = Path(str(config.storage.metadata_db_path)).parent
+        return data_dir / ".persona_distill.json"
+
+    async def read_distill_meta(self) -> dict[str, dict[str, Any]]:
+        """读取人物蒸馏元数据，格式 ``{person_id: {last_distilled_at, message_count}}``。"""
+        async with self._lock:
+            path = self._get_distill_path()
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (FileNotFoundError, OSError):
+                return {}
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+            if not isinstance(parsed, dict):
+                return {}
+            return {
+                str(key): value
+                for key, value in parsed.items()
+                if isinstance(value, dict)
+            }
+
+    async def write_distill_meta(self, meta: dict[str, dict[str, Any]]) -> None:
+        """原子写入人物蒸馏元数据。"""
+        async with self._lock:
+            _atomic_write_text(
+                self._get_distill_path(),
+                json.dumps(meta, ensure_ascii=False, indent=2),
+            )

@@ -10,9 +10,10 @@ import asyncio
 import time
 from typing import Any
 
-from src.app.plugin_system.api import log_api, prompt_api
+from src.app.plugin_system.api import database_api, log_api, prompt_api
 from src.app.plugin_system.base import BasePlugin, register_plugin
 from src.app.plugin_system.types import PromptTemplate
+from src.core.models.sql_alchemy import PersonInfo
 from src.kernel.concurrency import get_task_manager
 
 from .agent.memory_delete import MemoryDeleteTool
@@ -180,6 +181,12 @@ class EngramMemoryPlugin(BasePlugin):
                 ("engram_memory_short_term_cleanup", _CLEANUP_INTERVAL_SECONDS, self._run_cleanup_job)
             )
 
+        # 人物蒸馏夜间巡检：persona.enabled 时注册（每小时检查，回调内判定触发小时）
+        if config.persona.enabled:
+            plans.append(
+                ("engram_memory_persona_patrol", _CLEANUP_INTERVAL_SECONDS, self._run_persona_patrol_job)
+            )
+
         scheduler = get_unified_scheduler()
         for attempt in range(_SCHEDULE_RETRY_MAX):
             try:
@@ -218,6 +225,10 @@ class EngramMemoryPlugin(BasePlugin):
         """短期清理任务回调。"""
         await self._run_job_locked("cleanup", self._do_cleanup)
 
+    async def _run_persona_patrol_job(self) -> None:
+        """人物蒸馏夜间巡检回调（回调内判定触发小时）。"""
+        await self._run_job_locked("persona_patrol", self._do_persona_patrol)
+
     async def _run_job_locked(self, name: str, job) -> None:
         """带互斥锁执行后台任务，防止重叠运行。"""
         lock = self._job_locks.setdefault(name, asyncio.Lock())
@@ -241,6 +252,48 @@ class EngramMemoryPlugin(BasePlugin):
         store = shared_store(self, make_config_factory(self))
         memory_service = MemoryService(self)
         await summarize_short_term(self, store, memory_service)
+
+    async def _do_persona_patrol(self) -> None:
+        """夜间巡检：对当天活跃人物执行懒加载蒸馏（未达标自动跳过）。"""
+        if not isinstance(self.config, EngramMemoryConfig):
+            return
+        config = self.config
+        if not config.persona.enabled:
+            return
+        now = time.time()
+        active_cutoff = now - 24 * 3600.0
+
+        # 拉全部人物，过滤当天活跃（last_interaction 距今 ≤ 24h）
+        try:
+            persons = await database_api.get_multi(PersonInfo, skip=0, limit=10000)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"夜间巡检拉取人物失败: {exc}")
+            return
+
+        store = shared_store(self, make_config_factory(self))
+        distilled = 0
+        skipped = 0
+        for person in persons:
+            last_active = float(person.last_interaction or 0.0)
+            if last_active < active_cutoff:
+                continue
+            platform = str(person.platform or "")
+            user_id = str(person.user_id or "")
+            if not platform or not user_id:
+                continue
+            try:
+                from .service.persona_distiller import ensure_person_impression
+
+                _, reason = await ensure_person_impression(
+                    self, store, config, f"{platform}:{user_id}"
+                )
+                if "蒸馏完成" in reason:
+                    distilled += 1
+                else:
+                    skipped += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"夜间巡检蒸馏失败 {platform}:{user_id}: {exc}")
+        logger.info(f"人物夜间巡检完成: distilled={distilled} skipped={skipped}")
 
     async def _do_cleanup(self) -> None:
         """执行短期层清理：TTL 过期 + 数量上限（超限删最旧）。"""

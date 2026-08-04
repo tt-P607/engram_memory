@@ -34,6 +34,32 @@ class PersonService(BaseService):
 
         return MemoryService(self.plugin)
 
+    def _get_config(self) -> Any:
+        """返回插件配置。"""
+        from ..config import EngramMemoryConfig
+
+        config = self.plugin.config
+        if isinstance(config, EngramMemoryConfig):
+            return config
+        return EngramMemoryConfig()
+
+    def _get_store(self) -> Any:
+        """返回共享 store。"""
+        from ..store import shared_store
+
+        return shared_store(self.plugin, self._get_config)
+
+    async def _ensure_impression_lazy(self, platform: str, user_id: str) -> None:
+        """懒加载蒸馏：样本足够时蒸馏该人物印象（失败不抛出）。"""
+        from .persona_distiller import ensure_person_impression
+
+        await ensure_person_impression(
+            self.plugin,
+            self._get_store(),
+            self._get_config(),
+            f"{platform}:{user_id}",
+        )
+
     # ------------------------------------------------------------------
     # 人物查询
     # ------------------------------------------------------------------
@@ -69,6 +95,14 @@ class PersonService(BaseService):
         person = await person_api.get_person(platform, user_id)
         if person is None:
             return {"ok": False, "error": "person_id 不存在"}
+
+        # 懒加载蒸馏：缺印象且样本足够时立即蒸馏；已蒸馏则保持
+        config = self._get_config()
+        if config.persona.enabled:
+            try:
+                await self._ensure_impression_lazy(platform, user_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"懒加载蒸馏失败 {platform}:{user_id}: {exc}")
 
         memory_svc = self._memory_service(memory_service)
         memories = await self._search_person_memories(

@@ -161,6 +161,29 @@ class EngramMemoryConfig(BaseConfig):
             default="embedding", description="内部 embedding 模型任务名"
         )
 
+    @config_section("persona", title="人物蒸馏", tag="ai")
+    class PersonaSection(SectionBase):
+        """人物印象懒加载蒸馏参数。"""
+
+        enabled: bool = Field(
+            default=True,
+            description="是否启用人物印象懒加载蒸馏",
+            label="启用人物蒸馏",
+            tag="ai",
+        )
+        min_messages: int = Field(
+            default=1000, ge=50, le=10000,
+            description="触发蒸馏所需的最少文本消息条数",
+        )
+        max_messages: int = Field(
+            default=2000, ge=100, le=50000,
+            description="单次蒸馏最多取用的文本消息条数（取最新）",
+        )
+        chunk_size: int = Field(
+            default=200, ge=50, le=2000,
+            description="分块提炼时每块的文本消息条数",
+        )
+
     plugin: PluginSection = Field(default_factory=PluginSection)
     storage: StorageSection = Field(default_factory=StorageSection)
     retrieval: RetrievalSection = Field(default_factory=RetrievalSection)
@@ -169,3 +192,4 @@ class EngramMemoryConfig(BaseConfig):
     flashback: FlashbackSection = Field(default_factory=FlashbackSection)
     journal: JournalSection = Field(default_factory=JournalSection)
     internal_llm: InternalLLMSection = Field(default_factory=InternalLLMSection)
+    persona: PersonaSection = Field(default_factory=PersonaSection)

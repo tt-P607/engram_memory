@@ -8,6 +8,8 @@ from __future__ import annotations
 
 SUMMARY_PROMPT_NAME = "engram_memory.short_term_summary"
 IMPRESSION_PROMPT_NAME = "engram_memory.impression_update"
+DISTILL_PROMPT_NAME = "engram_memory.persona_distill"
+MERGE_PROMPT_NAME = "engram_memory.persona_merge"
 
 # 短期总结（每 30 分钟）
 # 注入本流人物清单，要求 person_id 只能从清单选，且必须为 platform:user_id 格式
@@ -120,7 +122,46 @@ prompt 中已被动注入的记忆板块（「近期群聊记忆」「记忆闪�
 - 不要把所有对话都写进去，只写值得保留的信息；拿不准就存，宁可多存别漏存
 """
 
+# 人物蒸馏：分块提炼（每块一次）
+DISTILL_PROMPT: str = """你是 {bot_name} 的记忆系统。以下是某个人的真实聊天记录片段。
+
+请基于这段记录，提炼该人物的可观察特征，输出 JSON 对象，包含：
+- personality：性格特质（如「嘴硬心软」「说话很冲但热心」）
+- style：说话风格（语气、常用词、表达习惯、幽默感等）
+- topics：话题偏好（常聊什么领域）
+- values：价值倾向（关心什么、立场）
+- knowledge：知识背景（擅长的领域，只写证据充分的）
+- attitude_to_me：对我的态度（亲近/疏远/客气/随意等，只写有依据的）
+- stable_info：稳定的身份信息（性别、大致年龄段、职业等，只写确凿的）
+
+要求：
+- 只写从这段记录能看出的内容，不确定的不写
+- 不要写具体事件、不要引用原话、不要编造
+- 每项都是简短的自然语言描述或字符串列表，不要长段落
+
+聊天记录片段：
+{messages}
+"""
+
+# 人物蒸馏：融合（汇总各块观察，写入最终印象）
+MERGE_PROMPT: str = """你是 {bot_name} 的记忆系统。以下是某个人物各段聊天记录的提炼观察。
+
+请将这些观察融合为一段对该人物的整体印象，输出纯文本（不是 JSON）。
+
+要求：
+- 只写稳定的特质：性格、说话风格、话题偏好、价值倾向、对我的态度、确凿的身份信息
+- 不要写具体事件、不要引用原话、不要数字细节
+- 保持朦胧：像多年朋友在脑中转述这个人，概括、留白
+- 不确定的不要写；各段观察矛盾时取更常见/更近期的
+- 字数上限 {max_chars} 字，按信息量定长短，不要硬凑
+
+各段观察：
+{observations}
+"""
+
 PROMPT_TEMPLATES: dict[str, str] = {
     SUMMARY_PROMPT_NAME: SUMMARY_PROMPT,
     IMPRESSION_PROMPT_NAME: IMPRESSION_PROMPT,
+    DISTILL_PROMPT_NAME: DISTILL_PROMPT,
+    MERGE_PROMPT_NAME: MERGE_PROMPT,
 }
