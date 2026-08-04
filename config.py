@@ -142,27 +142,10 @@ class EngramMemoryConfig(BaseConfig):
             depends_on="enabled", depends_value=True,
         )
 
-    @config_section("journal", title="日记回顾", tag="timer")
+    @config_section("journal", title="人物印象", tag="ai")
     class JournalSection(SectionBase):
-        """日记回顾机制参数。"""
+        """人物印象参数（日记回顾已移除，仅保留印象相关配置）。"""
 
-        enabled: bool = Field(
-            default=True,
-            description="是否启用日记回顾、长期记忆提取与人物印象更新",
-            label="启用日记回顾",
-            tag="timer",
-        )
-        trigger_hour: int = Field(default=3, ge=0, le=23, description="日记回顾触发小时（本地时间）")
-        startup_compensation_hours: int = Field(
-            default=24, ge=1, le=72, description="启动补偿阈值：距上次回顾超过该小时数则立即回顾"
-        )
-        active_stream_hours: int = Field(
-            default=24, ge=1, le=720,
-            description="活跃流判定阈值：last_active_time 距今超过该小时数则跳过回顾",
-        )
-        density_mode: str = Field(
-            default="balanced", description="信息密度模式：balanced/full"
-        )
         impression_max_chars: int = Field(
             default=500, ge=100, le=2000, description="人物印象最大字数"
         )

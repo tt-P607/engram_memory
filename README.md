@@ -1,14 +1,13 @@
 # Engram Memory（记忆痕迹）
 
-Neo-MoFox 三层记忆插件：短期 / 中期 / 长期记忆 + 日记回顾 + 人物连接。
+Neo-MoFox 三层记忆插件：短期 / 中期 / 长期记忆 + 人物连接。
 
 ## 功能
 
 - **三层记忆**：短期（48h TTL）→ 中期（活跃缓冲）→ 长期（永久归档），跨群全局检索
-- **日记回顾**：每日自动回顾聊天流，生成第一人称回忆录日记，并提取长期记忆
 - **人物连接**：通过 `person_lookup` 查询人物认知（昵称 / 印象 / 交互时间线）与相关记忆索引
 - **记忆闪回**：基于语义关联的概率性联想注入
-- **管理后台**：Web 页面 + REST API，可查看 / 编辑 / 删除记忆与日记
+- **管理后台**：Web 页面 + REST API，可查看 / 编辑 / 删除记忆
 
 ## 组件
 
@@ -19,7 +18,6 @@ Neo-MoFox 三层记忆插件：短期 / 中期 / 长期记忆 + 日记回顾 + �
 | Tool | `memory_write` | 创建或更新记忆 |
 | Tool | `memory_delete` | 软删除单条记忆 |
 | Tool | `person_lookup` | 查询人物认知 + 记忆索引目录 |
-| Tool | `journal_read` | 按日期范围 / 流名翻看日记 |
 | EventHandler | `short_term_injector` | 短期记忆被动注入（DYNAMIC） |
 | EventHandler | `flashback_injector` | 记忆闪回注入（DYNAMIC） |
 | EventHandler | `private_chat_person_injector` | 私聊人物认知注入（FIXED） |
@@ -33,7 +31,6 @@ Neo-MoFox 三层记忆插件：短期 / 中期 / 长期记忆 + 日记回顾 + �
 |------|------|
 | `plugin.enabled` | 插件总开关 |
 | `short_term.enabled` | 短期记忆后台总结与短期注入 |
-| `journal.enabled` | 日记回顾、长期记忆提取、人物印象更新、短期晋升清理 |
 | `flashback.enabled` | 记忆闪回 |
 
 关闭后相应后台任务 / 注入不再运行，但 6 个记忆工具仍可被 LLM 显式调用。

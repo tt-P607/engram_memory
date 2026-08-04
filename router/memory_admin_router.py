@@ -1,7 +1,7 @@
 """engram_memory 管理后台 Router。
 
 提供记忆管理 Web 页面与 REST API：状态概览、记忆列表/详情/创建/更新/
-删除、人物认知查询、日记浏览、手动触发日记回顾。
+删除、人物认知查询。
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from src.app.plugin_system.base import BaseRouter
 from ..config import EngramMemoryConfig
 from ..service.memory_service import MemoryService
 from ..service.person_service import PersonService
-from ..store import shared_repo, shared_store
+from ..store import shared_repo
 
 if TYPE_CHECKING:
     from src.app.plugin_system.base import BasePlugin
@@ -108,12 +108,10 @@ class MemoryAdminRouter(BaseRouter):
 
         @app.get("/api/status")
         async def status() -> dict[str, Any]:
-            """各层计数 + 最近记录概览 + 上次回顾时间。"""
+            """各层计数 + 最近记录概览。"""
             repo = shared_repo(self.plugin, lambda: self._get_config())
-            store = shared_store(self.plugin, lambda: self._get_config())
             counts = await repo.count_by_layer()
             recent = await repo.list_by_layer(layer="active", limit=5)
-            last_review = await store.read_last_review()
             return {
                 "ok": True,
                 "counts": counts,
@@ -127,16 +125,14 @@ class MemoryAdminRouter(BaseRouter):
                     }
                     for r in recent
                 ],
-                "last_review": last_review,
             }
 
         @app.get("/api/stats")
         async def stats() -> dict[str, Any]:
-            """全面统计：各层计数、软删数、人物数、流数、日记数、过期短期数。"""
+            """全面统计：各层计数、软删数、人物数、流数、过期短期数、向量计数。"""
             from src.kernel.vector_db import get_vector_db_service
 
             repo = shared_repo(self.plugin, lambda: self._get_config())
-            store = shared_store(self.plugin, lambda: self._get_config())
             config = self._get_config()
 
             counts = await repo.count_by_layer()
@@ -171,19 +167,9 @@ class MemoryAdminRouter(BaseRouter):
                 ).scalars().all()
             stream_count = len([p for p in stream_rows if p])
 
-            # 日记数：扫描 journals 目录
+            # 过期短期记忆数
             import time as _time
 
-            journal_count = 0
-            journal_streams: list[str] = []
-            journal_dir = Path(str(config.storage.journal_dir))
-            if journal_dir.is_dir():
-                for sub in journal_dir.iterdir():
-                    if sub.is_dir():
-                        journal_streams.append(sub.name)
-                        journal_count += sum(1 for _ in sub.glob("*.md"))
-
-            # 过期短期记忆数
             now = _time.time()
             expired = await repo.list_expired_short_term(now=now)
 
@@ -205,11 +191,8 @@ class MemoryAdminRouter(BaseRouter):
                 "deleted": deleted,
                 "person_count": person_count,
                 "stream_count": stream_count,
-                "journal_count": journal_count,
-                "journal_streams": journal_streams,
                 "expired_short_term": len(expired),
                 "vector_counts": vector_counts,
-                "last_review": await store.read_last_review(),
             }
 
         @app.get("/api/memories")
@@ -368,37 +351,6 @@ class MemoryAdminRouter(BaseRouter):
             person_service = PersonService(self.plugin)
             return await person_service.lookup_person(q)
 
-        @app.get("/api/journals")
-        async def list_journals(
-            date_from: str = Query(..., description="开始日期 YYYY-MM-DD"),
-            date_to: str | None = Query(default=None, description="结束日期"),
-            stream_name: str | None = Query(default=None, description="流名称过滤"),
-            limit: int = Query(default=7, ge=1, le=30),
-        ) -> dict[str, Any]:
-            """日记浏览。"""
-            store = shared_store(self.plugin, lambda: self._get_config())
-            end = date_to or date_from
-            items = await store.read_journal(date_from, end, stream_name, limit=limit)
-            return {"ok": True, "items": items}
-
-        @app.get("/api/journals/streams")
-        async def journal_streams() -> dict[str, Any]:
-            """日记流目录树：每个流名下有哪些日期的日记。"""
-            config = self._get_config()
-            journal_dir = Path(str(config.storage.journal_dir))
-            streams: list[dict[str, Any]] = []
-            if journal_dir.is_dir():
-                for sub in sorted(journal_dir.iterdir()):
-                    if not sub.is_dir():
-                        continue
-                    dates = sorted(
-                        p.name[:-3] for p in sub.glob("*.md") if p.name.endswith(".md")
-                    )
-                    streams.append(
-                        {"stream_name": sub.name, "dates": dates, "count": len(dates)}
-                    )
-            return {"ok": True, "streams": streams}
-
         @app.get("/api/streams")
         async def list_streams(
             layer: str | None = Query(default=None, description="按层过滤"),
@@ -467,18 +419,3 @@ class MemoryAdminRouter(BaseRouter):
                 for pid, item in sorted(agg.items(), key=lambda kv: -sum(kv[1].values()))
             ][: int(limit)]
             return {"ok": True, "persons": persons}
-
-        @app.post("/api/journal/review")
-        async def trigger_review() -> dict[str, Any]:
-            """手动触发日记回顾（复用插件的 journal 互斥锁，防重叠）。"""
-            from src.kernel.concurrency import get_task_manager
-
-            # self.plugin 实际为 EngramMemoryPlugin（BasePlugin 子类），
-            # 公开方法 trigger_journal_review 只存在于子类上，类型检查器无法推断。
-            plugin = self.plugin
-            task = get_task_manager().create_task(
-                plugin.trigger_journal_review(),  # type: ignore[attr-defined]
-                name="engram_memory_journal_manual",
-                daemon=True,
-            )
-            return {"ok": True, "message": "日记回顾已受理", "task_id": task.task_id}

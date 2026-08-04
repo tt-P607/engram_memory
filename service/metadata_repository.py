@@ -396,12 +396,6 @@ class EngramMemoryMetadataRepository:
         """列出中期层（active）未删除记忆，updated_at 倒序。"""
         return await self.list_by_layer(layer="active", limit=limit)
 
-    async def list_all_active_for_review(
-        self, *, limit: int = 500
-    ) -> list[EngramMemoryRecord]:
-        """列出中期层全量（供日记回顾子任务 3 审查）。"""
-        return await self.list_by_layer(layer="active", limit=limit)
-
     async def list_expired_short_term(
         self, *, now: float
     ) -> list[EngramMemoryRecord]:
@@ -412,25 +406,6 @@ class EngramMemoryMetadataRepository:
                 select(R)
                 .where(R.layer == "short_term", R.is_deleted == 0, R.expires_at <= now)
                 .order_by(R.expires_at)
-            )
-            rows = (await s.execute(stmt)).scalars().all()
-        return [self._to_record(r) for r in rows]
-
-    async def list_short_term_promotable(
-        self, *, now: float
-    ) -> list[EngramMemoryRecord]:
-        """列出短期层中可晋升的记忆（activation_count>0 且未过期、未删除）。"""
-        R = EngramMemoryRecordModel
-        async with self._db.session() as s:
-            stmt = (
-                select(R)
-                .where(
-                    R.layer == "short_term",
-                    R.is_deleted == 0,
-                    R.activation_count > 0,
-                    R.expires_at > now,
-                )
-                .order_by(R.last_activated_at.desc())
             )
             rows = (await s.execute(stmt)).scalars().all()
         return [self._to_record(r) for r in rows]
@@ -479,35 +454,6 @@ class EngramMemoryMetadataRepository:
                 select(R)
                 .where(R.layer == "short_term", R.is_deleted == 0)
                 .order_by(R.created_at.asc())
-                .limit(max(1, int(limit)))
-            )
-            rows = (await s.execute(stmt)).scalars().all()
-        return [self._to_record(r) for r in rows]
-
-    async def list_active_by_created_range(
-        self, *, start_ts: float, end_ts: float, limit: int = 500
-    ) -> list[EngramMemoryRecord]:
-        """列出创建时间在 [start_ts, end_ts] 区间内、未删除的 active 记忆。
-
-        Args:
-            start_ts: 区间起点。
-            end_ts: 区间终点。
-            limit: 最大条数。
-
-        Returns:
-            active 记忆列表。
-        """
-        R = EngramMemoryRecordModel
-        async with self._db.session() as s:
-            stmt = (
-                select(R)
-                .where(
-                    R.layer == "active",
-                    R.is_deleted == 0,
-                    R.created_at >= start_ts,
-                    R.created_at <= end_ts,
-                )
-                .order_by(R.created_at.desc())
                 .limit(max(1, int(limit)))
             )
             rows = (await s.execute(stmt)).scalars().all()

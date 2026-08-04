@@ -39,15 +39,6 @@ class PrivateChatPersonInjector(BaseEventHandler):
     init_subscribe: list[EventType | str] = [EventType.ON_PROMPT_BUILD]
     _REMINDER_NAME = "engram_memory_person"
 
-    def _journal_enabled(self) -> bool:
-        """判断日记回顾是否启用（人物认知印象由日记回顾更新）。"""
-        from ..config import EngramMemoryConfig
-
-        config = self.plugin.config
-        if isinstance(config, EngramMemoryConfig):
-            return bool(config.journal.enabled)
-        return True
-
     def _get_msg(self, params: dict[str, Any]) -> Any | None:
         """从事件参数提取触发消息。"""
         values = params.get("values") or {}
@@ -76,10 +67,7 @@ class PrivateChatPersonInjector(BaseEventHandler):
             self._clear(stream_id)
             return EventDecision.SUCCESS, params
 
-        # 仅私聊注入；日记回顾关闭时人物认知（含印象）不注入
-        if not self._journal_enabled():
-            self._clear(stream_id)
-            return EventDecision.SUCCESS, params
+        # 仅私聊注入
         chat_type = str(message.chat_type or "").strip()
         if chat_type != "private":
             self._clear(stream_id)

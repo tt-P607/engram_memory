@@ -1,14 +1,13 @@
 """engram_memory 插件入口。
 
-三层记忆（短期/中期/长期）+ 日记回顾 + 人物连接。
-负责组件注册、生命周期、提示词模板注册与后台任务调度。
+三层记忆（短期/中期/长期）+ 人物连接。负责组件注册、生命周期、提示词
+模板注册与短期记忆后台任务调度。
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime
 from typing import Any
 
 from src.app.plugin_system.api import log_api, prompt_api
@@ -16,7 +15,6 @@ from src.app.plugin_system.base import BasePlugin, register_plugin
 from src.app.plugin_system.types import PromptTemplate
 from src.kernel.concurrency import get_task_manager
 
-from .agent.journal_read import JournalReadTool
 from .agent.memory_delete import MemoryDeleteTool
 from .agent.memory_read import MemoryReadTool
 from .agent.memory_search import MemorySearchTool
@@ -28,7 +26,6 @@ from .event_handler.private_chat_person_injector import PrivateChatPersonInjecto
 from .event_handler.short_term_injector import ShortTermInjector
 from .prompts import PROMPT_TEMPLATES
 from .router.memory_admin_router import MemoryAdminRouter
-from .service.journal_service import journal_review
 from .service.memory_service import MemoryService
 from .service.person_service import PersonService
 from .service.short_term_summarizer import summarize_short_term
@@ -64,10 +61,10 @@ def make_config_factory(plugin: Any) -> Any:
 
 @register_plugin
 class EngramMemoryPlugin(BasePlugin):
-    """三层记忆（短期/中期/长期）+ 日记回顾 + 人物连接插件。"""
+    """三层记忆（短期/中期/长期）+ 人物连接插件。"""
 
     plugin_name: str = "engram_memory"
-    plugin_description: str = "三层记忆（短期/中期/长期）+ 日记回顾 + 人物连接"
+    plugin_description: str = "三层记忆（短期/中期/长期）+ 人物连接"
     plugin_version: str = "1.0.0"
 
     configs: list[type] = [EngramMemoryConfig]
@@ -94,7 +91,6 @@ class EngramMemoryPlugin(BasePlugin):
             MemoryWriteTool,
             MemoryDeleteTool,
             PersonLookupTool,
-            JournalReadTool,
             MemoryService,
             PersonService,
             ShortTermInjector,
@@ -160,7 +156,7 @@ class EngramMemoryPlugin(BasePlugin):
     # ------------------------------------------------------------------
 
     async def _register_schedules_when_ready(self) -> None:
-        """等待 scheduler 运行后注册三个后台任务（含启动补偿）。"""
+        """等待 scheduler 运行后注册短期记忆后台任务。"""
         from src.kernel.scheduler import TriggerType, get_unified_scheduler
 
         if not isinstance(self.config, EngramMemoryConfig):
@@ -174,8 +170,7 @@ class EngramMemoryPlugin(BasePlugin):
             else _SUMMARIZER_INTERVAL_DEFAULT * 60
         )
 
-        # 后台任务按功能开关过滤：短期记忆相关任务仅在 short_term.enabled 时注册，
-        # 日记回顾/清理仅在 journal.enabled 时注册
+        # 短期记忆相关任务仅在 short_term.enabled 时注册
         plans: list[tuple[str, int, Any]] = []
         if config.short_term.enabled:
             plans.append(
@@ -183,14 +178,6 @@ class EngramMemoryPlugin(BasePlugin):
             )
             plans.append(
                 ("engram_memory_short_term_cleanup", _CLEANUP_INTERVAL_SECONDS, self._run_cleanup_job)
-            )
-        if config.journal.enabled:
-            plans.append(
-                (
-                    "engram_memory_journal_review",
-                    _CLEANUP_INTERVAL_SECONDS,  # 每小时检查一次，回调内判定触发小时
-                    self._run_journal_job,
-                )
             )
 
         scheduler = get_unified_scheduler()
@@ -219,31 +206,6 @@ class EngramMemoryPlugin(BasePlugin):
         else:
             logger.warning("等待 scheduler 就绪超时，engram_memory 后台任务未注册")
 
-        # 启动补偿：距上次回顾超阈值则立即触发一次
-        await self._startup_compensation()
-
-    async def _startup_compensation(self) -> None:
-        """启动补偿：检查 .last_journal_review，距现在超阈值则触发一次回顾。"""
-        if not isinstance(self.config, EngramMemoryConfig):
-            return
-        if not self.config.journal.enabled:
-            return
-        try:
-            store = shared_store(self, make_config_factory(self))
-            last = await store.read_last_review()
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(f"读取上次回顾时间失败: {exc}")
-            return
-        threshold = int(self.config.journal.startup_compensation_hours) * 3600
-        if last is None or (time.time() - last) > threshold:
-            logger.info("检测到启动补偿条件，触发一次日记回顾")
-            tm = get_task_manager()
-            tm.create_task(
-                self._do_journal_review(),
-                name="engram_memory_journal_startup_compensation",
-                daemon=True,
-            )
-
     # ------------------------------------------------------------------
     # 任务回调
     # ------------------------------------------------------------------
@@ -251,10 +213,6 @@ class EngramMemoryPlugin(BasePlugin):
     async def _run_summarizer_job(self) -> None:
         """短期总结任务回调。"""
         await self._run_job_locked("summarizer", self._do_summarizer)
-
-    async def _run_journal_job(self) -> None:
-        """日记回顾任务回调（回调内判定触发小时，配合每日循环）。"""
-        await self._run_job_locked("journal", self._do_journal)
 
     async def _run_cleanup_job(self) -> None:
         """短期清理任务回调。"""
@@ -283,45 +241,6 @@ class EngramMemoryPlugin(BasePlugin):
         store = shared_store(self, make_config_factory(self))
         memory_service = MemoryService(self)
         await summarize_short_term(self, store, memory_service)
-
-    async def _do_journal(self) -> None:
-        """定时任务回调：仅本地时间到达触发小时时执行日记回顾。"""
-        if not isinstance(self.config, EngramMemoryConfig):
-            return
-        # 回调内判定触发小时：非触发小时直接返回（配合每日循环）
-        trigger_hour = int(self.config.journal.trigger_hour)
-        if datetime.now().hour != trigger_hour:
-            return
-        await self._run_job_locked("journal", self._do_journal_review)
-
-    async def _do_journal_review(self) -> None:
-        """直接执行一次日记回顾（启动补偿/手动触发复用，不做小时判定）。"""
-        if not isinstance(self.config, EngramMemoryConfig):
-            return
-        store = shared_store(self, make_config_factory(self))
-        memory_service = MemoryService(self)
-        person_service = PersonService(self)
-        result = await journal_review(self, store, memory_service, person_service)
-        logger.info(f"日记回顾完成: {result}")
-
-    def trigger_journal_review(self) -> str:
-        """对外公开：手动触发一次日记回顾（复用 journal 互斥锁防重叠）。
-
-        Returns:
-            受理的任务 ID 字符串；日记回顾未启用时返回空字符串。
-        """
-        if not isinstance(self.config, EngramMemoryConfig):
-            return ""
-        if not self.config.journal.enabled:
-            logger.info("日记回顾未启用，忽略手动触发")
-            return ""
-        tm = get_task_manager()
-        task = tm.create_task(
-            self._run_job_locked("journal", self._do_journal_review),
-            name="engram_memory_journal_manual",
-            daemon=True,
-        )
-        return task.task_id
 
     async def _do_cleanup(self) -> None:
         """执行短期层清理：TTL 过期 + 数量上限（超限删最旧）。"""

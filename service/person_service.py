@@ -13,7 +13,6 @@ from src.app.plugin_system.api import log_api, person_api
 from src.app.plugin_system.base import BaseService
 
 if TYPE_CHECKING:
-    from ..store import MemoryStore
     from .memory_service import MemoryService
 
 logger = log_api.get_logger("engram_memory.person_service")
@@ -34,20 +33,6 @@ class PersonService(BaseService):
         from .memory_service import MemoryService
 
         return MemoryService(self.plugin)
-
-    def _store(self) -> "MemoryStore":
-        """返回共享 store。"""
-        from ..config import EngramMemoryConfig
-        from ..store import shared_store
-
-        plugin = self.plugin
-
-        def _config_factory() -> Any:
-            if isinstance(plugin.config, EngramMemoryConfig):
-                return plugin.config
-            return EngramMemoryConfig()
-
-        return shared_store(plugin, _config_factory)
 
     # ------------------------------------------------------------------
     # 人物查询

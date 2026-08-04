@@ -16,7 +16,6 @@
     { "component_type": "tool", "component_name": "memory_write", "dependencies": [] },
     { "component_type": "tool", "component_name": "memory_delete", "dependencies": [] },
     { "component_type": "tool", "component_name": "person_lookup", "dependencies": [] },
-    { "component_type": "tool", "component_name": "journal_read", "dependencies": [] },
     { "component_type": "service", "component_name": "memory_service", "dependencies": [] },
     { "component_type": "service", "component_name": "person_service", "dependencies": [] },
     { "component_type": "event_handler", "component_name": "short_term_injector", "dependencies": [] },

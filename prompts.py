@@ -7,12 +7,7 @@ sub_agent 优先读取 prompt_api 中已注册的模板，缺失时回退到本�
 from __future__ import annotations
 
 SUMMARY_PROMPT_NAME = "engram_memory.short_term_summary"
-JOURNAL_PROMPT_NAME = "engram_memory.stream_journal"
-EXTRACT_PROMPT_NAME = "engram_memory.memory_extract"
-ASSOCIATE_PROMPT_NAME = "engram_memory.stream_association"
 IMPRESSION_PROMPT_NAME = "engram_memory.impression_update"
-ACTIVE_REVIEW_PROMPT_NAME = "engram_memory.active_review"
-SHORT_TERM_REVIEW_PROMPT_NAME = "engram_memory.short_term_review"
 
 # 短期总结（每 30 分钟）
 # 注入本流人物清单，要求 person_id 只能从清单选，且必须为 platform:user_id 格式
@@ -35,62 +30,7 @@ SUMMARY_PROMPT: str = """你是 {bot_name} 的记忆系统。以下是「{stream
 {messages}
 """
 
-# 流日记生成（每日回顾第一步）— 第一人称回忆录
-JOURNAL_PROMPT: str = """你是 {bot_name}。以下是你在「{stream_name}」中 {date} 的真实对话记录。
-
-请以第一人称写一篇「这一天」的回忆录式日记，用你自己的性格和口吻。这不是工作报告，而是"我今天经历了什么、和谁聊了什么、当时的心情如何"。
-
-你的设定（人设）：
-{persona}
-
-要求：
-1. 严格按上述人设的性格、语气、说话方式叙事，可以带感叹、俏皮话、情绪波动
-2. 写出今天最难忘的几件事，要有细节和对话片段（谁说了什么）
-3. 提到今天遇到/互动的人
-4. 结尾用一句话总结今天的感受
-5. 用 Markdown 自然分段，不要用编号列表生硬堆砌
-
-对话记录：
-{messages}
-"""
-
-# 记忆提取（每日回顾第一步）— 从回忆录日记提取长期记忆
-EXTRACT_PROMPT: str = """你是 {bot_name} 的记忆系统。以下是 {date} 在「{stream_name}」的回忆录日记。
-
-请提取其中值得长期记住的信息，输出 JSON 数组。每条包含：
-title, content, event_time, person_id, related_people, core_tags, diffusion_tags, opposing_tags, relation_memory_ids
-
-要求：
-- 只提取真正值得永久记住的信息（重要事件、人物事实、重要决定、情感印记），过滤日常琐碎
-- person_id 与 related_people 只能从下方「本流人物清单」中选择，禁止编造
-- 人物格式必须是 platform:user_id（如 qq:123456）；日记中未匹配到清单内人物时该字段置 null/空数组
-- event_time 用 Unix 时间戳，无法确定时用 0
-- core_tags/diffusion_tags/opposing_tags 为字符串数组，小写、去重
-
-本流人物清单：
-{person_roster}
-
-日记内容：
-{journal_content}
-"""
-
-# 同流记忆关联建立（每日回顾第二步，每流内部）
-ASSOCIATE_PROMPT: str = """你是 {bot_name} 的记忆系统。以下是「{stream_name}」今日新提取的记忆，以及一些可能相关的已有记忆。
-
-请判断这些记忆之间是否存在实质关联（如描述同一件事、同一个项目、同一个人的相关事件），输出 JSON 数组，每项为 {{"a": memory_id, "b": memory_id, "reason": "简短理由"}}。
-
-要求：
-- 只输出确有实质关联的记忆对，没有则输出空数组
-- 只在本流内部关联，不要考虑其他流
-
-今日新记忆：
-{new_memories}
-
-已有记忆候选：
-{existing_candidates}
-"""
-
-# 人物印象更新（每日回顾第二步）
+# 人物印象更新（保留，供后续实现使用）
 IMPRESSION_PROMPT: str = """你是 {bot_name} 的记忆系统。以下是关于「{nickname}」的信息：
 
 当前印象：{current_impression}
@@ -111,33 +51,6 @@ IMPRESSION_PROMPT: str = """你是 {bot_name} 的记忆系统。以下是关于�
 - 无新交互、无新观察时返回原印象不变
 """
 
-# 中期层增量审查（每日回顾第二步，只审当天新增的 active）
-ACTIVE_REVIEW_PROMPT: str = """你是 {bot_name} 的记忆系统。以下是今天新写入的中期记忆列表：
-
-{active_memories}
-
-请审查每条，判定处置，输出 JSON 数组，每项含 memory_id 和 action。
-action 取值：
-- promote：这条记忆重要/长期有价值，晋升到长期层（archived）
-- discard：这条记忆不重要/是噪音，丢弃
-- keep：介于两者之间，保留在中期层等待下次审查
-
-只输出确有把握的判定；不确定的用 keep。
-"""
-
-# 短期记忆审查（每日回顾第二步，审所有未过期短期）
-SHORT_TERM_REVIEW_PROMPT: str = """你是 {bot_name} 的记忆系统。以下是当前短期记忆列表（48 小时内自动总结的近期记忆）：
-
-{short_term_memories}
-
-请审查每条，判定是否值得晋升为长期记忆，输出 JSON 数组，每项含 memory_id 和 action。
-action 取值：
-- promote：这条短期记忆有长期价值（重要事件、人物事实、重要决定），值得永久保存
-- keep：只是近期琐事/话题性内容，不需要永久保存
-
-只对确有长期价值的使用 promote，其余用 keep。
-"""
-
 # 记忆引导语（注册到全局 actor bucket）
 MEMORY_GUIDE_REMINDER: str = """## 记忆系统使用指引
 
@@ -156,7 +69,6 @@ MEMORY_GUIDE_REMINDER: str = """## 记忆系统使用指引
 - `memory_write(title, content, core_tags, diffusion_tags, opposing_tags, layer, person_id, related_people, memory_id)`：创建（layer 默认 active）或更新（传 memory_id）记忆。不用填时间戳（系统自动记录）。短期用 layer="short_term"，长期用 layer="archived"。
 - `memory_delete(memory_id)`：软删除一条记忆（危险操作，仅单条）。
 - `person_lookup(query)`：查询一个人物的认知（昵称/印象/交互时间线）与相关记忆索引。传入 person_id（如 qq:123456）或昵称。
-- `journal_read(date_from, date_to, stream_name)`：按日期范围翻看日记，回溯某天发生了什么。
 
 ### 三元标签组（写记忆时必填）
 
@@ -210,10 +122,5 @@ prompt 中已被动注入的记忆板块（「近期群聊记忆」「记忆闪�
 
 PROMPT_TEMPLATES: dict[str, str] = {
     SUMMARY_PROMPT_NAME: SUMMARY_PROMPT,
-    JOURNAL_PROMPT_NAME: JOURNAL_PROMPT,
-    EXTRACT_PROMPT_NAME: EXTRACT_PROMPT,
-    ASSOCIATE_PROMPT_NAME: ASSOCIATE_PROMPT,
     IMPRESSION_PROMPT_NAME: IMPRESSION_PROMPT,
-    ACTIVE_REVIEW_PROMPT_NAME: ACTIVE_REVIEW_PROMPT,
-    SHORT_TERM_REVIEW_PROMPT_NAME: SHORT_TERM_REVIEW_PROMPT,
 }

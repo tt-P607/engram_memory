@@ -147,14 +147,13 @@ td .tag { display: inline-block; background: var(--accent-soft); color: var(--ac
     <div class="brand">
       <p class="eyebrow">Memory Trace</p>
       <h1>Engram Memory</h1>
-      <p class="subtitle">三层记忆 · 日记回顾 · 人物连接</p>
+      <p class="subtitle">三层记忆 · 人物连接</p>
     </div>
     <nav class="nav">
       <button class="nav-btn active" data-page="overview"><span class="dot"></span>总览</button>
       <button class="nav-btn" data-page="memories"><span class="dot"></span>记忆管理</button>
       <button class="nav-btn" data-page="streams"><span class="dot"></span>聊天流</button>
       <button class="nav-btn" data-page="persons"><span class="dot"></span>人物认知</button>
-      <button class="nav-btn" data-page="journals"><span class="dot"></span>日记回顾</button>
       <button class="nav-btn" data-page="settings"><span class="dot"></span>工具</button>
     </nav>
     <div class="sidebar-foot" id="sideStatus">连接中…</div>
@@ -164,7 +163,7 @@ td .tag { display: inline-block; background: var(--accent-soft); color: var(--ac
   <main class="main">
     <!-- 总览 -->
     <section class="page active" id="page-overview">
-      <div class="page-head"><div><h2>记忆总览</h2><p class="hint">三层记忆分布、人物/流/日记统计与最近动态</p></div></div>
+      <div class="page-head"><div><h2>记忆总览</h2><p class="hint">三层记忆分布、人物/流统计与最近动态</p></div></div>
       <div class="stat-grid" id="statGrid"></div>
       <div class="stat-grid second" id="statGrid2" style="margin-top:12px"></div>
       <div class="panel" style="padding:16px">
@@ -228,32 +227,10 @@ td .tag { display: inline-block; background: var(--accent-soft); color: var(--ac
       </div>
     </section>
 
-    <!-- 日记回顾 -->
-    <section class="page" id="page-journals">
-      <div class="page-head"><div><h2>日记回顾</h2><p class="hint">按日期/流翻看已生成的流日记</p></div>
-        <button class="btn" onclick="triggerReview()">立即触发回顾</button></div>
-      <div class="panel" style="padding:16px">
-        <div class="toolbar">
-          <input id="journalFrom" type="date" />
-          <span style="color:var(--muted)">至</span>
-          <input id="journalTo" type="date" />
-          <input id="journalStream" placeholder="流名称过滤（可选）" />
-          <button class="btn ghost" onclick="loadJournals()">浏览</button>
-          <button class="btn ghost" style="margin-left:auto" onclick="loadJournalStreams()">流目录</button>
-        </div>
-        <div id="journalStreamTree"></div>
-        <div id="journalResult"></div>
-      </div>
-    </section>
-
     <!-- 工具 -->
     <section class="page" id="page-settings">
       <div class="page-head"><div><h2>工具</h2><p class="hint">数据维护与手动操作</p></div></div>
       <div class="panel" style="padding:20px">
-        <h3 style="margin-top:0">日记回顾</h3>
-        <p class="hint" style="margin-top:4px">手动触发一次完整日记回顾（第一步分流并行 + 第二步全局综合）。耗时较长，异步执行。</p>
-        <button class="btn" onclick="triggerReview()">触发日记回顾</button>
-        <hr style="border:none;border-top:1px solid var(--line);margin:22px 0" />
         <h3 style="margin-top:0">关于</h3>
         <p class="hint" style="margin-top:4px">Engram Memory 管理后台 v1.0.0</p>
       </div>
@@ -329,12 +306,12 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
 // ===== 总览 =====
 async function loadOverview() {
   try {
-    // 轻量状态（含 last_review），全量统计走 /stats
+    // 轻量状态，全量统计走 /stats
     fetch(API + '/status').then(r => r.json()).then(sd => {
       if (sd && sd.counts) {
         const c = sd.counts;
         document.getElementById('sideStatus').textContent =
-          `记忆总数 ${(c.short_term||0)+(c.active||0)+(c.archived||0)} · 上次回顾 ${fmtTs(sd.last_review)}`;
+          `记忆总数 ${(c.short_term||0)+(c.active||0)+(c.archived||0)}`;
       }
     }).catch(() => {});
     const r = await fetch(API + '/stats'); const d = await r.json();
@@ -350,8 +327,6 @@ async function loadOverview() {
     document.getElementById('statGrid2').innerHTML = [
       {label:'关联人物', value: d.person_count || 0, cls:''},
       {label:'聊天流', value: d.stream_count || 0, cls:''},
-      {label:'日记篇数', value: d.journal_count || 0, cls:''},
-      {label:'日记流', value: (d.journal_streams||[]).length, cls:''},
       {label:'软删记忆', value: (deleted.short_term||0)+(deleted.active||0)+(deleted.archived||0), cls:'warn'},
       {label:'过期短期', value: d.expired_short_term || 0, cls:'warn'},
     ].map(s => `<div class="stat-card"><div class="label">${s.label}</div><div class="value ${s.cls}">${s.value}</div></div>`).join('');
@@ -360,7 +335,7 @@ async function loadOverview() {
     tb.innerHTML = items.length ? `<tr><th>标题</th><th>层级</th><th>人物</th><th>更新时间</th><th></th></tr>` +
       items.map(it => `<tr><td>${esc(it.title)}</td><td>${layerBadge(it.layer)}</td><td>${esc(it.person_id||'—')}</td><td>${fmtTs(it.updated_at)}</td><td><button class="btn small ghost" onclick="openDetail('${esc(it.memory_id)}')">查看</button></td></tr>`).join('')
       : '<tr><td colspan="5" class="empty">暂无记忆</td></tr>';
-    document.getElementById('sideStatus').textContent = `记忆总数 ${total} · 人物 ${d.person_count||0} · 流 ${d.stream_count||0} · 上次回顾 ${fmtTs(d.last_review)}`;
+    document.getElementById('sideStatus').textContent = `记忆总数 ${total} · 人物 ${d.person_count||0} · 流 ${d.stream_count||0}`;
   } catch (e) { toast('加载总览失败: ' + e, false); }
 }
 
@@ -544,29 +519,6 @@ function lookupPersonFromList(id) {
   lookupPerson();
 }
 
-// ===== 日记流目录 =====
-async function loadJournalStreams() {
-  const box = document.getElementById('journalStreamTree');
-  try {
-    const r = await fetch(API + '/journals/streams'); const d = await r.json();
-    const streams = d.streams || [];
-    box.innerHTML = streams.length ? `<div class="panel" style="padding:16px;margin-bottom:12px">
-      <h3 style="margin:0 0 12px;font-size:15px">日记流目录（${streams.length}）</h3>
-      <div class="tree">` + streams.map(s => `
-        <div class="tree-item">
-          <strong>${esc(s.stream_name)}</strong> <span class="hint">(${s.count} 篇)</span>
-          <div class="tree-dates">${(s.dates||[]).map(dd => `<button class="btn small ghost" onclick="openJournalDate('${esc(dd)}','${esc(s.stream_name)}')">${esc(dd)}</button>`).join('') || '<span class="hint">无</span>'}</div>
-        </div>`).join('') + `</div></div>`
-      : '<div class="empty">暂无日记</div>';
-  } catch (e) { box.innerHTML = `<div class="empty">加载失败: ${esc(e)}</div>`; }
-}
-function openJournalDate(date, stream) {
-  document.getElementById('journalFrom').value = date;
-  document.getElementById('journalTo').value = date;
-  document.getElementById('journalStream').value = stream;
-  loadJournals();
-}
-
 // ===== 人物认知 =====
 async function lookupPerson() {
   const q = document.getElementById('personQuery').value.trim();
@@ -601,34 +553,6 @@ function switchToMemory(id) {
   document.querySelector('.nav-btn[data-page="memories"]').click();
   document.getElementById('memSearch').value = '';
   openDetail(id);
-}
-
-// ===== 日记回顾 =====
-async function loadJournals() {
-  const f = document.getElementById('journalFrom').value;
-  const t = document.getElementById('journalTo').value || f;
-  const s = document.getElementById('journalStream').value.trim();
-  const box = document.getElementById('journalResult');
-  if (!f) { box.innerHTML = '<div class="empty">选择开始日期</div>'; return; }
-  try {
-    const r = await fetch(`${API}/journals?date_from=${f}&date_to=${t}${s ? '&stream_name='+encodeURIComponent(s) : ''}`);
-    const d = await r.json(); const items = d.items || [];
-    box.innerHTML = items.length ? items.map(j => `
-      <div class="panel" style="padding:16px;margin-bottom:12px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <strong>${esc(j.stream_name || '未知流')}</strong>
-          <span class="meta-line">${esc(j.date)}</span>
-        </div>
-        <pre style="white-space:pre-wrap;font-family:inherit;font-size:13px;line-height:1.7;color:var(--ink);margin:0;max-height:320px;overflow-y:auto">${esc(j.content)}</pre>
-      </div>`).join('') : '<div class="empty">该日期范围无日记</div>';
-  } catch (e) { box.innerHTML = `<div class="empty">加载失败: ${esc(e)}</div>`; }
-}
-async function triggerReview() {
-  if (!confirm('触发一次完整日记回顾？可能耗时较长。')) return;
-  try {
-    const r = await fetch(API + '/journal/review', {method:'POST'}); const d = await r.json();
-    toast(d.message || '日记回顾已受理', d.ok !== false);
-  } catch (e) { toast('触发失败: ' + e, false); }
 }
 
 // ===== 初始化 =====
