@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Engram Memory Console</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0e1116;
+  --panel: rgba(22, 27, 36, 0.86);
+  --panel-strong: #161b24;
+  --ink: #e8ecf1;
+  --muted: #8b93a1;
+  --line: rgba(94, 130, 160, 0.16);
+  --accent: #56c8b4;
+  --accent-deep: #2e8f7e;
+  --accent-soft: rgba(86, 200, 180, 0.12);
+  --warn: #e0a14b;
+  --danger: #ef6a5f;
+  --info: #6fa8dc;
+  --shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+  --radius-xl: 24px;
+  --radius-lg: 16px;
+  --radius-md: 12px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh;
+  font-family: "Avenir Next", "Segoe UI Variable", "PingFang SC", "Noto Sans SC", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(86, 200, 180, 0.10), transparent 30%),
+    radial-gradient(circle at right 15% bottom 20%, rgba(47, 92, 161, 0.12), transparent 25%),
+    linear-gradient(155deg, #0c0f14 0%, #11161e 50%, #0e1218 100%);
+}
+body::before {
+  content: ""; position: fixed; inset: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(86, 200, 180, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(86, 200, 180, 0.025) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(circle at 50% 20%, black 30%, transparent 90%);
+}
+.shell { position: relative; display: grid; grid-template-columns: 260px minmax(0,1fr); gap: 16px; padding: 20px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-xl); backdrop-filter: blur(18px); box-shadow: var(--shadow); }
+.sidebar { padding: 20px; position: sticky; top: 20px; height: calc(100vh - 40px); display: flex; flex-direction: column; }
+.brand { padding-bottom: 16px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.eyebrow { margin: 0 0 8px; text-transform: uppercase; font-size: 11px; letter-spacing: 0.22em; color: var(--accent); font-weight: 700; }
+h1 { margin: 0; font-size: 26px; line-height: 1.1; letter-spacing: -0.03em; }
+.subtitle { margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.nav { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.nav-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 11px 14px; border-radius: var(--radius-md); border: 1px solid transparent;
+  background: transparent; color: var(--muted); font-size: 14px; font-weight: 600; cursor: pointer;
+  transition: all 0.18s ease;
+}
+.nav-btn:hover { background: rgba(86,200,180,0.07); color: var(--ink); }
+.nav-btn.active { background: var(--accent-soft); color: var(--accent); border-color: rgba(86,200,180,0.3); }
+.nav-btn .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: 0.6; }
+.sidebar-foot { padding-top: 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.6; }
+.main { padding: 20px; min-height: calc(100vh - 40px); }
+.page { display: none; }
+.page.active { display: block; }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 18px; }
+.page-head h2 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
+.page-head .hint { color: var(--muted); font-size: 13px; margin-top: 6px; }
+.toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
+.toolbar input, .toolbar select {
+  background: var(--panel-strong); border: 1px solid var(--line); color: var(--ink);
+  border-radius: var(--radius-md); padding: 9px 12px; font-size: 13px; outline: none;
+}
+.toolbar input:focus, .toolbar select:focus { border-color: var(--accent); }
+.btn {
+  background: var(--accent); color: #07110e; border: none; border-radius: var(--radius-md);
+  padding: 9px 16px; font-size: 13px; font-weight: 700; cursor: pointer; transition: filter 0.15s;
+}
+.btn:hover { filter: brightness(1.12); }
+.btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.btn.ghost:hover { color: var(--ink); border-color: var(--accent); }
+.btn.danger { background: transparent; color: var(--danger); border: 1px solid rgba(239,106,95,0.4); }
+.btn.danger:hover { background: rgba(239,106,95,0.12); }
+.btn.small { padding: 6px 12px; font-size: 12px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip { padding: 8px 14px; border-radius: 999px; font-size: 12px; font-weight: 700; cursor: pointer; border: 1px solid var(--line); color: var(--muted); background: transparent; }
+.chip.active { background: var(--accent-soft); color: var(--accent); border-color: rgba(86,200,180,0.4); }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 12px; margin-bottom: 20px; }
+.stat-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 16px; }
+.stat-card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+.stat-card .value { font-size: 30px; font-weight: 800; margin-top: 6px; letter-spacing: -0.03em; }
+.stat-card .value.accent { color: var(--accent); }
+.stat-card .value.warn { color: var(--warn); }
+.stat-card .value.info { color: var(--info); }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: top; }
+th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; white-space: nowrap; }
+tr:hover td { background: rgba(86,200,180,0.03); }
+td .tag { display: inline-block; background: var(--accent-soft); color: var(--accent); border-radius: 6px; padding: 2px 8px; font-size: 11px; margin: 2px 2px 2px 0; }
+.layer-badge { display: inline-block; border-radius: 999px; padding: 3px 10px; font-size: 11px; font-weight: 700; }
+.layer-short_term { background: rgba(224,161,75,0.16); color: var(--warn); }
+.layer-active { background: rgba(86,200,180,0.16); color: var(--accent); }
+.layer-archived { background: rgba(111,168,220,0.16); color: var(--info); }
+.row-actions { display: flex; gap: 6px; }
+.empty { color: var(--muted); text-align: center; padding: 40px 0; font-size: 14px; }
+.detail-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+.field { margin-bottom: 12px; }
+.field label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; font-weight: 600; }
+.field input, .field textarea, .field select {
+  width: 100%; background: var(--panel-strong); border: 1px solid var(--line); color: var(--ink);
+  border-radius: var(--radius-md); padding: 10px 12px; font-size: 13px; outline: none; font-family: inherit;
+}
+.field textarea { min-height: 120px; resize: vertical; line-height: 1.6; }
+.field input:focus, .field textarea:focus, .field select:focus { border-color: var(--accent); }
+.field .multi-hint { color: var(--muted); font-size: 11px; margin-top: 4px; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 100; }
+.modal-backdrop.show { display: flex; }
+.modal { width: min(680px, 92vw); max-height: 88vh; overflow-y: auto; background: var(--panel-strong); border: 1px solid var(--line); border-radius: var(--radius-xl); padding: 24px; box-shadow: var(--shadow); }
+.modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.modal-head h3 { margin: 0; font-size: 18px; }
+.modal-close { background: none; border: none; color: var(--muted); font-size: 22px; cursor: pointer; line-height: 1; }
+.toast {
+  position: fixed; bottom: 24px; right: 24px; padding: 12px 20px; border-radius: var(--radius-md);
+  background: var(--panel-strong); border: 1px solid var(--line); color: var(--ink); font-size: 13px;
+  box-shadow: var(--shadow); opacity: 0; transform: translateY(12px); transition: all 0.25s ease; z-index: 200;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.ok { border-color: rgba(86,200,180,0.5); }
+.toast.err { border-color: rgba(239,106,95,0.5); }
+.meta-line { color: var(--muted); font-size: 12px; margin-top: 6px; line-height: 1.7; }
+.person-row { cursor: pointer; }
+.mono { font-family: "Cascadia Code", "SF Mono", Consolas, monospace; font-size: 12px; }
+.stat-grid.second .stat-card { background: var(--panel-strong); }
+.stat-card .value.warn { color: var(--warn); }
+.tree { display: flex; flex-direction: column; gap: 10px; }
+.tree-item { padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-strong); }
+.tree-dates { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tree-dates .btn { padding: 4px 10px; font-size: 12px; }
+@media (max-width: 900px) { .shell { grid-template-columns: 1fr; } .sidebar { position: static; height: auto; } }
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- 侧边栏 -->
+  <aside class="panel sidebar">
+    <div class="brand">
+      <p class="eyebrow">Memory Trace</p>
+      <h1>Engram Memory</h1>
+      <p class="subtitle">三层记忆 · 日记回顾 · 人物连接</p>
+    </div>
+    <nav class="nav">
+      <button class="nav-btn active" data-page="overview"><span class="dot"></span>总览</button>
+      <button class="nav-btn" data-page="memories"><span class="dot"></span>记忆管理</button>
+      <button class="nav-btn" data-page="streams"><span class="dot"></span>聊天流</button>
+      <button class="nav-btn" data-page="persons"><span class="dot"></span>人物认知</button>
+      <button class="nav-btn" data-page="journals"><span class="dot"></span>日记回顾</button>
+      <button class="nav-btn" data-page="settings"><span class="dot"></span>工具</button>
+    </nav>
+    <div class="sidebar-foot" id="sideStatus">连接中…</div>
+  </aside>
+
+  <!-- 主区 -->
+  <main class="main">
+    <!-- 总览 -->
+    <section class="page active" id="page-overview">
+      <div class="page-head"><div><h2>记忆总览</h2><p class="hint">三层记忆分布、人物/流/日记统计与最近动态</p></div></div>
+      <div class="stat-grid" id="statGrid"></div>
+      <div class="stat-grid second" id="statGrid2" style="margin-top:12px"></div>
+      <div class="panel" style="padding:16px">
+        <div class="toolbar"><h3 style="margin:0;font-size:15px">最近记忆</h3><span class="hint" style="flex:1"></span>
+          <button class="btn ghost small" onclick="loadOverview()">刷新</button></div>
+        <div class="table-wrap"><table id="recentTable"></table></div>
+      </div>
+    </section>
+
+    <!-- 记忆管理 -->
+    <section class="page" id="page-memories">
+      <div class="page-head"><div><h2>记忆管理</h2><p class="hint">检索、筛选、编辑三层记忆</p></div>
+        <button class="btn" onclick="openCreate()">+ 新建记忆</button></div>
+      <div class="panel" style="padding:16px">
+        <div class="toolbar">
+          <input id="memSearch" placeholder="搜索标题/内容…" onkeydown="if(event.key==='Enter')loadMemories()" />
+          <input id="memPerson" placeholder="人物 ID（如 qq:123）" onkeydown="if(event.key==='Enter')loadMemories()" />
+          <button class="btn ghost" onclick="loadMemories()">查询</button>
+          <div class="chips" style="margin-left:auto">
+            <button class="chip active" data-layer="" onclick="filterLayer(this,'')">全部</button>
+            <button class="chip" data-layer="short_term" onclick="filterLayer(this,'short_term')">短期</button>
+            <button class="chip" data-layer="active" onclick="filterLayer(this,'active')">中期</button>
+            <button class="chip" data-layer="archived" onclick="filterLayer(this,'archived')">长期</button>
+          </div>
+        </div>
+        <div class="table-wrap"><table id="memTable"></table></div>
+      </div>
+    </section>
+
+    <!-- 聊天流 -->
+    <section class="page" id="page-streams">
+      <div class="page-head"><div><h2>聊天流</h2><p class="hint">按聊天流聚合查看全部记忆</p></div>
+        <button class="btn ghost" onclick="loadStreams()">刷新</button></div>
+      <div class="panel" style="padding:16px">
+        <div class="toolbar">
+          <select id="streamLayerFilter" onchange="loadStreams()">
+            <option value="">全部层</option>
+            <option value="short_term">短期</option>
+            <option value="active">中期</option>
+            <option value="archived">长期</option>
+          </select>
+          <input id="streamSearch" placeholder="搜索流 ID…" onkeydown="if(event.key==='Enter')loadStreams()" />
+          <button class="btn ghost" onclick="loadStreams()">查询</button>
+        </div>
+        <div class="table-wrap"><table id="streamTable"></table></div>
+        <div id="streamMemories" style="margin-top:14px"></div>
+      </div>
+    </section>
+
+    <!-- 人物认知 -->
+    <section class="page" id="page-persons">
+      <div class="page-head"><div><h2>人物认知</h2><p class="hint">按人物查看印象与相关记忆</p></div></div>
+      <div class="panel" style="padding:16px">
+        <div class="toolbar">
+          <input id="personQuery" placeholder="昵称或 person_id…" onkeydown="if(event.key==='Enter')lookupPerson()" />
+          <button class="btn ghost" onclick="lookupPerson()">查询</button>
+          <button class="btn ghost" style="margin-left:auto" onclick="loadPersonList()">所有人</button>
+        </div>
+        <div id="personList"></div>
+        <div id="personResult"></div>
+      </div>
+    </section>
+
+    <!-- 日记回顾 -->
+    <section class="page" id="page-journals">
+      <div class="page-head"><div><h2>日记回顾</h2><p class="hint">按日期/流翻看已生成的流日记</p></div>
+        <button class="btn" onclick="triggerReview()">立即触发回顾</button></div>
+      <div class="panel" style="padding:16px">
+        <div class="toolbar">
+          <input id="journalFrom" type="date" />
+          <span style="color:var(--muted)">至</span>
+          <input id="journalTo" type="date" />
+          <input id="journalStream" placeholder="流名称过滤（可选）" />
+          <button class="btn ghost" onclick="loadJournals()">浏览</button>
+          <button class="btn ghost" style="margin-left:auto" onclick="loadJournalStreams()">流目录</button>
+        </div>
+        <div id="journalStreamTree"></div>
+        <div id="journalResult"></div>
+      </div>
+    </section>
+
+    <!-- 工具 -->
+    <section class="page" id="page-settings">
+      <div class="page-head"><div><h2>工具</h2><p class="hint">数据维护与手动操作</p></div></div>
+      <div class="panel" style="padding:20px">
+        <h3 style="margin-top:0">日记回顾</h3>
+        <p class="hint" style="margin-top:4px">手动触发一次完整日记回顾（第一步分流并行 + 第二步全局综合）。耗时较长，异步执行。</p>
+        <button class="btn" onclick="triggerReview()">触发日记回顾</button>
+        <hr style="border:none;border-top:1px solid var(--line);margin:22px 0" />
+        <h3 style="margin-top:0">关于</h3>
+        <p class="hint" style="margin-top:4px">Engram Memory 管理后台 v1.0.0</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- 编辑/新建弹窗 -->
+<div class="modal-backdrop" id="memModal">
+  <div class="modal">
+    <div class="modal-head"><h3 id="memModalTitle">新建记忆</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="field"><label>标题</label><input id="f_title" /></div>
+    <div class="field"><label>内容</label><textarea id="f_content"></textarea></div>
+    <div class="field"><label>层级</label>
+      <select id="f_layer"><option value="active">中期（active）</option><option value="archived">长期（archived）</option><option value="short_term">短期（short_term）</option></select></div>
+    <div class="field"><label>事件时间（Unix 时间戳）</label><input id="f_event_time" type="number" /></div>
+    <div class="field"><label>核心人物（platform:user_id）</label><input id="f_person_id" /></div>
+    <div class="field"><label>核心标签（逗号分隔）</label><input id="f_core_tags" /></div>
+    <div class="field"><label>扩散标签（逗号分隔）</label><input id="f_diffusion_tags" /></div>
+    <div class="field"><label>对立标签（逗号分隔）</label><input id="f_opposing_tags" /></div>
+    <div class="field"><label>涉及人物（逗号分隔）</label><input id="f_related_people" /><div class="multi-hint">格式 platform:user_id，多个用逗号分隔</div></div>
+    <div class="field"><label>关联记忆 ID（逗号分隔）</label><input id="f_relation_ids" /><div class="multi-hint">多个用逗号分隔</div></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
+      <button class="btn ghost" onclick="closeModal()">取消</button>
+      <button class="btn" onclick="saveMemory()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '/engram-memory/api';
+let currentLayer = '';
+let editingId = null;
+
+// ===== 工具 =====
+function toast(msg, ok) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'toast show ' + (ok ? 'ok' : 'err');
+  setTimeout(() => t.className = 'toast', 2600);
+}
+function esc(s) {
+  const el = document.createElement('span');
+  el.textContent = String(s ?? '');
+  return el.innerHTML;
+}
+function layerBadge(layer) {
+  const label = {short_term:'短期', active:'中期', archived:'长期'}[layer] || layer;
+  return `<span class="layer-badge layer-${esc(layer)}">${esc(label)}</span>`;
+}
+function tags(tags) { return (tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join(''); }
+function fmtTs(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+
+// ===== 导航 =====
+document.querySelectorAll('.nav-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('page-' + btn.dataset.page).classList.add('active');
+    if (btn.dataset.page === 'overview') loadOverview();
+    if (btn.dataset.page === 'memories') loadMemories();
+    if (btn.dataset.page === 'streams') loadStreams();
+    if (btn.dataset.page === 'persons') loadPersonList();
+  });
+});
+
+// ===== 总览 =====
+async function loadOverview() {
+  try {
+    // 轻量状态（含 last_review），全量统计走 /stats
+    fetch(API + '/status').then(r => r.json()).then(sd => {
+      if (sd && sd.counts) {
+        const c = sd.counts;
+        document.getElementById('sideStatus').textContent =
+          `记忆总数 ${(c.short_term||0)+(c.active||0)+(c.archived||0)} · 上次回顾 ${fmtTs(sd.last_review)}`;
+      }
+    }).catch(() => {});
+    const r = await fetch(API + '/stats'); const d = await r.json();
+    const counts = d.counts || {};
+    const deleted = d.deleted || {};
+    const total = (counts.short_term||0)+(counts.active||0)+(counts.archived||0);
+    document.getElementById('statGrid').innerHTML = [
+      {label:'短期记忆', value: counts.short_term || 0, cls:''},
+      {label:'中期记忆', value: counts.active || 0, cls:'accent'},
+      {label:'长期记忆', value: counts.archived || 0, cls:'info'},
+      {label:'记忆总数', value: total, cls:''},
+    ].map(s => `<div class="stat-card"><div class="label">${s.label}</div><div class="value ${s.cls}">${s.value}</div></div>`).join('');
+    document.getElementById('statGrid2').innerHTML = [
+      {label:'关联人物', value: d.person_count || 0, cls:''},
+      {label:'聊天流', value: d.stream_count || 0, cls:''},
+      {label:'日记篇数', value: d.journal_count || 0, cls:''},
+      {label:'日记流', value: (d.journal_streams||[]).length, cls:''},
+      {label:'软删记忆', value: (deleted.short_term||0)+(deleted.active||0)+(deleted.archived||0), cls:'warn'},
+      {label:'过期短期', value: d.expired_short_term || 0, cls:'warn'},
+    ].map(s => `<div class="stat-card"><div class="label">${s.label}</div><div class="value ${s.cls}">${s.value}</div></div>`).join('');
+    const tb = document.getElementById('recentTable');
+    const items = d.recent || [];
+    tb.innerHTML = items.length ? `<tr><th>标题</th><th>层级</th><th>人物</th><th>更新时间</th><th></th></tr>` +
+      items.map(it => `<tr><td>${esc(it.title)}</td><td>${layerBadge(it.layer)}</td><td>${esc(it.person_id||'—')}</td><td>${fmtTs(it.updated_at)}</td><td><button class="btn small ghost" onclick="openDetail('${esc(it.memory_id)}')">查看</button></td></tr>`).join('')
+      : '<tr><td colspan="5" class="empty">暂无记忆</td></tr>';
+    document.getElementById('sideStatus').textContent = `记忆总数 ${total} · 人物 ${d.person_count||0} · 流 ${d.stream_count||0} · 上次回顾 ${fmtTs(d.last_review)}`;
+  } catch (e) { toast('加载总览失败: ' + e, false); }
+}
+
+// ===== 记忆管理 =====
+function filterLayer(el, layer) {
+  document.querySelectorAll('.chip[data-layer]').forEach(c => c.classList.remove('active'));
+  el.classList.add('active'); currentLayer = layer; loadMemories();
+}
+async function loadMemories() {
+  const q = document.getElementById('memSearch').value.trim();
+  const person = document.getElementById('memPerson').value.trim();
+  let url = API + '/memories?limit=100';
+  if (currentLayer) url += '&layer=' + encodeURIComponent(currentLayer);
+  if (q) url += '&q=' + encodeURIComponent(q);
+  if (person) url += '&person_id=' + encodeURIComponent(person);
+  try {
+    const r = await fetch(url); const d = await r.json();
+    const tb = document.getElementById('memTable');
+    const items = d.items || [];
+    tb.innerHTML = items.length ? `<tr><th>标题</th><th>层级</th><th>人物</th><th>标签</th><th>更新时间</th><th>操作</th></tr>` +
+      items.map(it => `<tr>
+        <td>${esc(it.title)}</td>
+        <td>${layerBadge(it.layer)}</td>
+        <td>${esc(it.person_id||'—')}</td>
+        <td>${tags(it.core_tags)}</td>
+        <td>${fmtTs(it.updated_at)}</td>
+        <td><div class="row-actions">
+          <button class="btn small ghost" onclick="openDetail('${esc(it.memory_id)}')">查看</button>
+          <button class="btn small ghost" onclick="openEdit('${esc(it.memory_id)}')">编辑</button>
+          <button class="btn small danger" onclick="removeMemory('${esc(it.memory_id)}')">删除</button>
+        </div></td></tr>`).join('')
+      : '<tr><td colspan="6" class="empty">无匹配记忆</td></tr>';
+  } catch (e) { toast('加载记忆失败: ' + e, false); }
+}
+async function openDetail(id) {
+  try {
+    const r = await fetch(API + '/memories/' + id); const d = await r.json(); const it = d.item || {};
+    openModal('记忆详情');
+    document.getElementById('f_title').value = it.title || '';
+    document.getElementById('f_content').value = it.content || '';
+    document.getElementById('f_layer').value = it.layer || 'active';
+    document.getElementById('f_event_time').value = it.event_time || '';
+    document.getElementById('f_person_id').value = it.person_id || '';
+    document.getElementById('f_core_tags').value = (it.core_tags||[]).join(',');
+    document.getElementById('f_diffusion_tags').value = (it.diffusion_tags||[]).join(',');
+    document.getElementById('f_opposing_tags').value = (it.opposing_tags||[]).join(',');
+    document.getElementById('f_related_people').value = (it.related_people||[]).join(',');
+    document.getElementById('f_relation_ids').value = (it.relation_memory_ids||[]).join(',');
+    editingId = null;
+    const saveBtn = document.querySelector('#memModal .btn:last-of-type');
+    saveBtn.style.display = 'none';
+  } catch (e) { toast('读取详情失败: ' + e, false); }
+}
+function openCreate() {
+  openModal('新建记忆');
+  ['f_title','f_content','f_person_id','f_core_tags','f_diffusion_tags','f_opposing_tags','f_related_people','f_relation_ids'].forEach(i => document.getElementById(i).value = '');
+  document.getElementById('f_layer').value = 'active';
+  document.getElementById('f_event_time').value = Math.floor(Date.now()/1000);
+  editingId = null;
+  document.querySelector('#memModal .btn:last-of-type').style.display = '';
+}
+async function openEdit(id) {
+  try {
+    const r = await fetch(API + '/memories/' + id); const d = await r.json(); const it = d.item || {};
+    openModal('编辑记忆');
+    document.getElementById('f_title').value = it.title || '';
+    document.getElementById('f_content').value = it.content || '';
+    document.getElementById('f_layer').value = it.layer || 'active';
+    document.getElementById('f_event_time').value = it.event_time || '';
+    document.getElementById('f_person_id').value = it.person_id || '';
+    document.getElementById('f_core_tags').value = (it.core_tags||[]).join(',');
+    document.getElementById('f_diffusion_tags').value = (it.diffusion_tags||[]).join(',');
+    document.getElementById('f_opposing_tags').value = (it.opposing_tags||[]).join(',');
+    document.getElementById('f_related_people').value = (it.related_people||[]).join(',');
+    document.getElementById('f_relation_ids').value = (it.relation_memory_ids||[]).join(',');
+    editingId = id;
+    document.querySelector('#memModal .btn:last-of-type').style.display = '';
+  } catch (e) { toast('读取详情失败: ' + e, false); }
+}
+function splitList(v) { return v.split(',').map(s => s.trim()).filter(Boolean); }
+async function saveMemory() {
+  const body = {
+    title: document.getElementById('f_title').value.trim(),
+    content: document.getElementById('f_content').value.trim(),
+    layer: document.getElementById('f_layer').value,
+    event_time: parseFloat(document.getElementById('f_event_time').value || '0'),
+    person_id: document.getElementById('f_person_id').value.trim() || null,
+    core_tags: splitList(document.getElementById('f_core_tags').value),
+    diffusion_tags: splitList(document.getElementById('f_diffusion_tags').value),
+    opposing_tags: splitList(document.getElementById('f_opposing_tags').value),
+    related_people: splitList(document.getElementById('f_related_people').value),
+    relation_memory_ids: splitList(document.getElementById('f_relation_ids').value),
+  };
+  try {
+    if (editingId) {
+      await fetch(API + '/memories/' + editingId, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      toast('记忆已更新', true);
+    } else {
+      await fetch(API + '/memories', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      toast('记忆已创建', true);
+    }
+    closeModal(); loadMemories();
+  } catch (e) { toast('保存失败: ' + e, false); }
+}
+async function removeMemory(id) {
+  if (!confirm('确定删除记忆 ' + id + ' ？（软删除，可恢复）')) return;
+  try { await fetch(API + '/memories/' + id, {method:'DELETE'}); toast('已删除', true); loadMemories(); }
+  catch (e) { toast('删除失败: ' + e, false); }
+}
+function openModal(title) { document.getElementById('memModalTitle').textContent = title; document.getElementById('memModal').classList.add('show'); }
+function closeModal() { document.getElementById('memModal').classList.remove('show'); }
+
+// ===== 聊天流 =====
+async function loadStreams() {
+  const layer = document.getElementById('streamLayerFilter').value;
+  const q = document.getElementById('streamSearch').value.trim();
+  let url = API + '/streams';
+  if (layer) url += '?layer=' + encodeURIComponent(layer);
+  try {
+    const r = await fetch(url); const d = await r.json();
+    const tb = document.getElementById('streamTable');
+    let streams = d.streams || [];
+    if (q) streams = streams.filter(s => (s.stream_id||'').includes(q));
+    document.getElementById('streamMemories').innerHTML = '';
+    tb.innerHTML = streams.length ? `<tr><th>流 ID</th><th>短期</th><th>中期</th><th>长期</th><th>总计</th><th></th></tr>` +
+      streams.map(s => `<tr>
+        <td class="mono">${esc(s.stream_id)}</td>
+        <td>${s.counts.short_term||0}</td>
+        <td>${s.counts.active||0}</td>
+        <td>${s.counts.archived||0}</td>
+        <td><strong>${s.total}</strong></td>
+        <td><button class="btn small ghost" onclick="showStreamMemories('${esc(s.stream_id)}')">查看记忆</button></td>
+      </tr>`).join('')
+      : '<tr><td colspan="6" class="empty">无流数据</td></tr>';
+  } catch (e) { toast('加载流失败: ' + e, false); }
+}
+async function showStreamMemories(streamId) {
+  const box = document.getElementById('streamMemories');
+  try {
+    const r = await fetch(`${API}/memories?stream_id=${encodeURIComponent(streamId)}&limit=100`);
+    const d = await r.json(); const items = d.items || [];
+    box.innerHTML = `<div class="panel" style="padding:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <strong class="mono">${esc(streamId)}</strong>
+        <button class="btn small ghost" onclick="document.getElementById('streamMemories').innerHTML=''">收起</button>
+      </div>
+      <div class="table-wrap"><table>
+      <tr><th>标题</th><th>层级</th><th>人物</th><th>标签</th><th>更新时间</th><th></th></tr>` +
+      (items.length ? items.map(it => `<tr>
+        <td>${esc(it.title)}</td><td>${layerBadge(it.layer)}</td>
+        <td>${esc(it.person_id||'—')}</td><td>${tags(it.core_tags)}</td>
+        <td>${fmtTs(it.updated_at)}</td>
+        <td><button class="btn small ghost" onclick="openDetail('${esc(it.memory_id)}')">查看</button></td>
+      </tr>`).join('') : '<tr><td colspan="6" class="empty">该流无记忆</td></tr>') +
+      `</table></div></div>`;
+  } catch (e) { box.innerHTML = `<div class="empty">加载失败: ${esc(e)}</div>`; }
+}
+
+// ===== 人物列表 =====
+async function loadPersonList() {
+  const box = document.getElementById('personList');
+  try {
+    const r = await fetch(API + '/persons-list'); const d = await r.json();
+    const persons = d.persons || [];
+    box.innerHTML = `<div class="panel" style="padding:16px">
+      <h3 style="margin:0 0 12px;font-size:15px">所有关联人物（${persons.length}）</h3>
+      <div class="table-wrap"><table>
+      <tr><th>人物 ID</th><th>短期</th><th>中期</th><th>长期</th><th>总计</th><th></th></tr>` +
+      (persons.length ? persons.map(p => `<tr>
+        <td>${esc(p.person_id)}</td>
+        <td>${p.counts.short_term||0}</td><td>${p.counts.active||0}</td><td>${p.counts.archived||0}</td>
+        <td><strong>${p.total}</strong></td>
+        <td><button class="btn small ghost" onclick="lookupPersonFromList('${esc(p.person_id)}')">查看</button></td>
+      </tr>`).join('') : '<tr><td colspan="6" class="empty">暂无人物关联</td></tr>') +
+      `</table></div></div>`;
+  } catch (e) { box.innerHTML = `<div class="empty">加载失败: ${esc(e)}</div>`; }
+}
+function lookupPersonFromList(id) {
+  document.getElementById('personQuery').value = id;
+  document.getElementById('personList').innerHTML = '';
+  lookupPerson();
+}
+
+// ===== 日记流目录 =====
+async function loadJournalStreams() {
+  const box = document.getElementById('journalStreamTree');
+  try {
+    const r = await fetch(API + '/journals/streams'); const d = await r.json();
+    const streams = d.streams || [];
+    box.innerHTML = streams.length ? `<div class="panel" style="padding:16px;margin-bottom:12px">
+      <h3 style="margin:0 0 12px;font-size:15px">日记流目录（${streams.length}）</h3>
+      <div class="tree">` + streams.map(s => `
+        <div class="tree-item">
+          <strong>${esc(s.stream_name)}</strong> <span class="hint">(${s.count} 篇)</span>
+          <div class="tree-dates">${(s.dates||[]).map(dd => `<button class="btn small ghost" onclick="openJournalDate('${esc(dd)}','${esc(s.stream_name)}')">${esc(dd)}</button>`).join('') || '<span class="hint">无</span>'}</div>
+        </div>`).join('') + `</div></div>`
+      : '<div class="empty">暂无日记</div>';
+  } catch (e) { box.innerHTML = `<div class="empty">加载失败: ${esc(e)}</div>`; }
+}
+function openJournalDate(date, stream) {
+  document.getElementById('journalFrom').value = date;
+  document.getElementById('journalTo').value = date;
+  document.getElementById('journalStream').value = stream;
+  loadJournals();
+}
+
+// ===== 人物认知 =====
+async function lookupPerson() {
+  const q = document.getElementById('personQuery').value.trim();
+  const box = document.getElementById('personResult');
+  if (!q) { box.innerHTML = '<div class="empty">输入昵称或 person_id 查询</div>'; return; }
+  try {
+    const r = await fetch(API + '/persons?q=' + encodeURIComponent(q)); const d = await r.json();
+    if (!d.ok) { box.innerHTML = `<div class="empty">${esc(d.error || '未找到')}</div>`; return; }
+    const p = d.person || {};
+    const mems = d.memories || [];
+    box.innerHTML = `
+      <div class="panel" style="padding:18px;margin-bottom:14px">
+        <h3 style="margin:0 0 10px">${esc(p.nickname || '未知用户')}</h3>
+        <div class="meta-line">
+          身份：${esc(p.platform||'')} ${esc(p.user_id||'')}（${esc(p.person_id||'')}）<br/>
+          认识于：${fmtTs(p.first_interaction)} · 最近活跃：${fmtTs(p.last_interaction)}<br/>
+          ${(p.nickname_history||[]).length ? '历史曾用名：' + esc((p.nickname_history||[]).map(h=>h.name).join('、')) + '<br/>' : ''}
+          印象：${esc(p.impression || '暂无印象')}
+        </div>
+      </div>
+      <div class="panel" style="padding:16px">
+        <h3 style="margin:0 0 12px;font-size:15px">相关记忆（${mems.length}）</h3>
+        <div class="table-wrap"><table id="personMemTable"></table></div>
+      </div>`;
+    const tb = document.getElementById('personMemTable');
+    tb.innerHTML = mems.length ? `<tr><th>标题</th><th>更新时间</th><th></th></tr>` +
+      mems.map(m => `<tr><td>${esc(m.title)}</td><td>${fmtTs(m.updated_at)}</td><td><button class="btn small ghost" onclick="switchToMemory('${esc(m.memory_id)}')">查看</button></td></tr>`).join('')
+      : '<tr><td colspan="3" class="empty">暂无相关记忆</td></tr>';
+  } catch (e) { box.innerHTML = `<div class="empty">查询失败: ${esc(e)}</div>`; }
+}
+function switchToMemory(id) {
+  document.querySelector('.nav-btn[data-page="memories"]').click();
+  document.getElementById('memSearch').value = '';
+  openDetail(id);
+}
+
+// ===== 日记回顾 =====
+async function loadJournals() {
+  const f = document.getElementById('journalFrom').value;
+  const t = document.getElementById('journalTo').value || f;
+  const s = document.getElementById('journalStream').value.trim();
+  const box = document.getElementById('journalResult');
+  if (!f) { box.innerHTML = '<div class="empty">选择开始日期</div>'; return; }
+  try {
+    const r = await fetch(`${API}/journals?date_from=${f}&date_to=${t}${s ? '&stream_name='+encodeURIComponent(s) : ''}`);
+    const d = await r.json(); const items = d.items || [];
+    box.innerHTML = items.length ? items.map(j => `
+      <div class="panel" style="padding:16px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <strong>${esc(j.stream_name || '未知流')}</strong>
+          <span class="meta-line">${esc(j.date)}</span>
+        </div>
+        <pre style="white-space:pre-wrap;font-family:inherit;font-size:13px;line-height:1.7;color:var(--ink);margin:0;max-height:320px;overflow-y:auto">${esc(j.content)}</pre>
+      </div>`).join('') : '<div class="empty">该日期范围无日记</div>';
+  } catch (e) { box.innerHTML = `<div class="empty">加载失败: ${esc(e)}</div>`; }
+}
+async function triggerReview() {
+  if (!confirm('触发一次完整日记回顾？可能耗时较长。')) return;
+  try {
+    const r = await fetch(API + '/journal/review', {method:'POST'}); const d = await r.json();
+    toast(d.message || '日记回顾已受理', d.ok !== false);
+  } catch (e) { toast('触发失败: ' + e, false); }
+}
+
+// ===== 初始化 =====
+loadOverview();
+</script>
+</body>
+</html>
