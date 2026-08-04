@@ -135,6 +135,32 @@ def _merge_observations(observations: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
+def _load_bot_persona() -> tuple[str, str]:
+    """读取真实 bot 人设（昵称/核心人格/人格侧面/身份）。
+
+    Returns:
+        (bot 昵称, 人设文本)；读取失败时返回 ("Engram Memory", "")。
+    """
+    try:
+        from src.app.plugin_system.api import config_api
+
+        personality = config_api.get_core_config().personality
+        bot_name = str(personality.nickname or "") or "Engram Memory"
+        parts: list[str] = []
+        if personality.personality_core:
+            parts.append(f"性格：{personality.personality_core}")
+        if personality.personality_side:
+            parts.append(f"人格侧面：{personality.personality_side}")
+        if personality.identity:
+            parts.append(f"身份：{personality.identity}")
+        if personality.reply_style:
+            parts.append(f"表达风格：{personality.reply_style}")
+        return bot_name, "\n".join(parts)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"读取 bot 人设失败: {exc}")
+        return "Engram Memory", ""
+
+
 async def distill_person(
     plugin: Any,
     store: "MemoryStore",
@@ -202,10 +228,12 @@ async def distill_person(
     if not observations:
         return {"ok": True, "distilled": False, "reason": "特征提炼为空"}
 
-    # 融合为最终印象
+    # 融合为最终印象（注入真实 bot 人设，以 bot 口吻写）
     max_chars = int(config.journal.impression_max_chars)
+    bot_name, persona_text = _load_bot_persona()
     merge_prompt = resolve_prompt(MERGE_PROMPT_NAME, MERGE_PROMPT).format(
-        bot_name="Engram Memory",
+        bot_name=bot_name,
+        persona=persona_text or "（无）",
         observations=_merge_observations(observations),
         max_chars=max_chars,
     )
@@ -214,6 +242,7 @@ async def distill_person(
         request_name="engram_memory_persona_merge",
         system=merge_prompt,
         user=merge_prompt,
+        persona=persona_text or None,
     )
     impression_text = str(impression_text or "").strip()
     if not impression_text:
