@@ -65,8 +65,6 @@ class EngramMemoryPlugin(BasePlugin):
     """三层记忆（短期/中期/长期）+ 人物连接插件。"""
 
     plugin_name: str = "engram_memory"
-    plugin_description: str = "三层记忆（短期/中期/长期）+ 人物连接"
-    plugin_version: str = "1.0.0"
 
     configs: list[type] = [EngramMemoryConfig]
     dependent_components: list[str] = []

@@ -23,7 +23,6 @@ class PersonService(BaseService):
 
     name: str = "person_service"
     description: str = "engram_memory 人物连接服务"
-    version: str = "1.0.0"
     dependencies: list[str] = []
 
     def _memory_service(self, memory_service: "MemoryService | None") -> "MemoryService":

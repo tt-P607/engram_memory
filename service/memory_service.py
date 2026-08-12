@@ -73,7 +73,6 @@ class MemoryService(BaseService):
 
     name: str = "memory_service"
     description: str = "engram_memory 记忆核心服务：三层记忆 CRUD + 检索 + EPA + 晋升"
-    version: str = "1.0.0"
     dependencies: list[str] = []
 
     def _get_config(self) -> EngramMemoryConfig:
