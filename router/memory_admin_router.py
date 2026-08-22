@@ -21,6 +21,7 @@ from src.app.plugin_system.base import BaseRouter
 from ..config import EngramMemoryConfig
 from ..service.memory_service import MemoryService
 from ..service.person_service import PersonService
+from ..metrics import get_metrics
 from ..store import shared_repo, shared_store
 
 if TYPE_CHECKING:
@@ -193,6 +194,7 @@ class MemoryAdminRouter(BaseRouter):
                 "stream_count": stream_count,
                 "expired_short_term": len(expired),
                 "vector_counts": vector_counts,
+                "metrics": get_metrics(self.plugin).snapshot(),
             }
 
         @app.get("/api/memories")
@@ -433,3 +435,50 @@ class MemoryAdminRouter(BaseRouter):
                 self.plugin, store, config, person_id, force=True
             )
             return {"ok": bool(result.get("ok")), **result}
+
+        @app.get("/api/persons/scope")
+        async def get_person_scope(
+            person_id: str = Query(..., description="人物原始 ID（platform:user_id）"),
+        ) -> dict[str, Any]:
+            """查询人物蒸馏范围：人物级覆盖 + 生效值。"""
+            store = shared_store(self.plugin, lambda: self._get_config())
+            meta = await store.read_distill_meta()
+            entry = meta.get(person_id) or {}
+            override = entry.get("scope")
+            effective = (
+                str(override).strip().lower()
+                if str(override or "").strip().lower() in {"all", "group", "private"}
+                else str(self._get_config().persona.scope)
+            )
+            return {
+                "ok": True,
+                "person_id": person_id,
+                "override": override or None,
+                "global_default": str(self._get_config().persona.scope),
+                "effective": effective,
+            }
+
+        @app.put("/api/persons/scope")
+        async def set_person_scope(
+            person_id: str = Query(..., description="人物原始 ID（platform:user_id）"),
+            scope: str = Query(..., description="all/group/private；传空字符串清除覆盖"),
+        ) -> dict[str, Any]:
+            """设置或清除人物级蒸馏范围覆盖（下次蒸馏生效）。"""
+            normalized = scope.strip().lower()
+            if normalized and normalized not in {"all", "group", "private"}:
+                raise HTTPException(status_code=400, detail="scope 必须是 all/group/private 或空")
+
+            store = shared_store(self.plugin, lambda: self._get_config())
+            meta = await store.read_distill_meta()
+            entry = meta.get(person_id) or {}
+            if normalized:
+                entry["scope"] = normalized
+            else:
+                entry.pop("scope", None)
+            meta[person_id] = entry
+            await store.write_distill_meta(meta)
+            return {
+                "ok": True,
+                "person_id": person_id,
+                "override": normalized or None,
+            }

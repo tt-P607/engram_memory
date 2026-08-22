@@ -8,10 +8,10 @@ from src.app.plugin_system.base import BaseConfig, Field, SectionBase, config_se
 
 
 class EngramMemoryConfig(BaseConfig):
-    """Engram Memory 三层记忆 + 日记回顾 + 人物连接配置模型。"""
+    """Engram Memory 三层记忆 + 人物连接配置模型。"""
 
     name: ClassVar[str] = "config"
-    description: ClassVar[str] = "Engram Memory 三层记忆（短期/中期/长期）+ 日记回顾 + 人物连接"
+    description: ClassVar[str] = "Engram Memory 三层记忆（短期/中期/长期）+ 人物连接"
 
     @config_section("plugin", title="插件设置", tag="plugin")
     class PluginSection(SectionBase):
@@ -42,30 +42,13 @@ class EngramMemoryConfig(BaseConfig):
             input_type="text",
             tag="file",
         )
-        journal_dir: str = Field(
-            default="data/engram_memory/journals",
-            description="日记 Markdown 存储目录",
-            label="日记目录",
-            input_type="text",
-            tag="file",
-        )
 
     @config_section("retrieval", title="检索配置", tag="ai")
     class RetrievalSection(SectionBase):
         """语义检索参数。"""
 
-        default_top_k: int = Field(default=10, ge=1, le=50, description="默认检索返回数量")
         deduplication_threshold: float = Field(
             default=0.92, ge=0.0, le=1.0, description="检索结果去重阈值"
-        )
-        llm_dedup_enabled: bool = Field(
-            default=False, description="是否启用 LLM 参与去重决策（灰色地带记忆对）"
-        )
-        llm_dedup_gray_min: float = Field(
-            default=0.85, ge=0.0, le=1.0, description="LLM 去重灰色地带下界"
-        )
-        llm_dedup_gray_max: float = Field(
-            default=0.95, ge=0.0, le=1.0, description="LLM 去重灰色地带上界"
         )
         epa_skip_short_term: bool = Field(
             default=True, description="短期层检索是否跳过 EPA 重塑（记忆量小直接向量检索）"
@@ -147,7 +130,7 @@ class EngramMemoryConfig(BaseConfig):
         """人物印象参数（日记回顾已移除，仅保留印象相关配置）。"""
 
         impression_max_chars: int = Field(
-            default=500, ge=100, le=2000, description="人物印象最大字数"
+            default=600, ge=100, le=2000, description="人物印象最大字数"
         )
 
     @config_section("internal_llm", title="内部 LLM 配置", tag="ai")
@@ -171,17 +154,37 @@ class EngramMemoryConfig(BaseConfig):
             label="启用人物蒸馏",
             tag="ai",
         )
+        scope: str = Field(
+            default="all",
+            description="印象蒸馏的消息范围：all=全部 / group=仅群聊 / private=仅私聊（可按人物覆盖）",
+        )
         min_messages: int = Field(
-            default=1000, ge=50, le=10000,
-            description="触发蒸馏所需的最少文本消息条数",
+            default=200, ge=20, le=10000,
+            description="触发蒸馏所需的最少本人文本消息条数",
         )
         max_messages: int = Field(
             default=2000, ge=100, le=50000,
-            description="单次蒸馏最多取用的文本消息条数（取最新）",
+            description="锚点定位时最多取用的本人消息条数（取最新）",
+        )
+        window_count: int = Field(
+            default=15, ge=3, le=60,
+            description="蒸馏采样的对话窗口数量",
+        )
+        window_radius: int = Field(
+            default=12, ge=2, le=50,
+            description="每个窗口在锚点前后各取的消息条数",
         )
         chunk_size: int = Field(
             default=200, ge=50, le=2000,
             description="分块提炼时每块的文本消息条数",
+        )
+        memory_index_limit: int = Field(
+            default=100, ge=10, le=300,
+            description="印象蒸馏选记忆环节展示的记忆目录条数",
+        )
+        memory_material_limit: int = Field(
+            default=20, ge=3, le=50,
+            description="印象蒸馏允许取用的记忆全文条数",
         )
 
     plugin: PluginSection = Field(default_factory=PluginSection)

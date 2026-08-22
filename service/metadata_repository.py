@@ -459,12 +459,46 @@ class EngramMemoryMetadataRepository:
             rows = (await s.execute(stmt)).scalars().all()
         return [self._to_record(r) for r in rows]
 
+    async def list_short_term_promotable(
+        self,
+        *,
+        now: float,
+        min_activation: int = 2,
+    ) -> list[EngramMemoryRecord]:
+        """列出符合规则晋升条件的短期记忆（激活达标且未过期未删除）。
+
+        用于短期层 → 中期层的自动晋升（activation_count 达标说明该记忆
+        有实际相关性，值得在 TTL 之外保留）。
+
+        Args:
+            now: 当前时间戳。
+            min_activation: 最低激活次数阈值。
+
+        Returns:
+            符合晋升条件的短期记忆列表。
+        """
+        R = EngramMemoryRecordModel
+        async with self._db.session() as s:
+            stmt = (
+                select(R)
+                .where(
+                    R.layer == "short_term",
+                    R.is_deleted == 0,
+                    R.activation_count >= min_activation,
+                    R.expires_at > now,
+                )
+                .order_by(R.activation_count.desc())
+            )
+            rows = (await s.execute(stmt)).scalars().all()
+        return [self._to_record(r) for r in rows]
+
     async def search_by_person(
         self,
         *,
         person_id: str,
         layers: list[str],
         limit: int = 10,
+        include_related: bool = False,
     ) -> list[EngramMemoryRecord]:
         """按人物查询记忆（限定层，updated_at 倒序）。
 
@@ -472,6 +506,8 @@ class EngramMemoryMetadataRepository:
             person_id: 人物原始 ID（platform:user_id）。
             layers: 允许的层列表（如 ["active", "archived"]）。
             limit: 最大返回条数。
+            include_related: 是否同时匹配 related_people 中包含该人物的
+                记忆（JSON 文本 LIKE 匹配，带引号边界防前缀误命中）。
 
         Returns:
             匹配的人物相关记忆列表。
@@ -482,15 +518,65 @@ class EngramMemoryMetadataRepository:
             stmt = (
                 select(R)
                 .where(
-                    R.person_id == person_id,
                     R.layer.in_(normalized_layers),
                     R.is_deleted == 0,
+                )
+            )
+            if include_related:
+                pattern = f'%"{person_id}"%'
+                stmt = stmt.where(
+                    (R.person_id == person_id) | (R.related_people.like(pattern))
+                )
+            else:
+                stmt = stmt.where(R.person_id == person_id)
+            stmt = stmt.order_by(R.updated_at.desc()).limit(max(1, int(limit)))
+            rows = (await s.execute(stmt)).scalars().all()
+        return [self._to_record(r) for r in rows]
+
+    async def search_person_memory_index(
+        self,
+        *,
+        person_id: str,
+        layers: list[str],
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """按人物查询轻量记忆目录（仅 id/标题/更新时间，updated_at 倒序）。
+
+        供印象蒸馏的「选记忆」环节使用：先给模型看目录挑选，再按 id
+        取全文，避免一次性载入大量 content。同时匹配 person_id 与
+        related_people。
+
+        Args:
+            person_id: 人物原始 ID（platform:user_id）。
+            layers: 允许的层列表。
+            limit: 最大返回条数。
+
+        Returns:
+            ``[{"memory_id", "title", "updated_at"}]`` 列表。
+        """
+        normalized_layers = [self._normalize_layer(layer) for layer in layers]
+        R = EngramMemoryRecordModel
+        pattern = f'%"{person_id}"%'
+        async with self._db.session() as s:
+            stmt = (
+                select(R.memory_id, R.title, R.updated_at)
+                .where(
+                    R.layer.in_(normalized_layers),
+                    R.is_deleted == 0,
+                    (R.person_id == person_id) | (R.related_people.like(pattern)),
                 )
                 .order_by(R.updated_at.desc())
                 .limit(max(1, int(limit)))
             )
-            rows = (await s.execute(stmt)).scalars().all()
-        return [self._to_record(r) for r in rows]
+            rows = (await s.execute(stmt)).all()
+        return [
+            {
+                "memory_id": str(row.memory_id),
+                "title": str(row.title or ""),
+                "updated_at": float(row.updated_at or 0.0),
+            }
+            for row in rows
+        ]
 
     async def search_records(
         self,

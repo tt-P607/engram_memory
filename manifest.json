@@ -2,10 +2,10 @@
   "name": "engram_memory",
   "display_name": "Engram Memory",
   "version": "1.0.0",
-  "description": "三层记忆（短期/中期/长期）+ 日记回顾 + 人物连接的新记忆系统插件",
+  "description": "三层记忆（短期/中期/长期）+ 人物连接的新记忆系统插件",
   "author": "MoFox Team",
   "categories": "tool",
-  "tags": ["memory", "记忆", "回忆录", "人物", "日记"],
+  "tags": ["memory", "记忆", "人物", "印象蒸馏"],
   "dependencies": {
     "plugins": [],
     "components": []

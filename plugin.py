@@ -1,7 +1,7 @@
 """engram_memory 插件入口。
 
 三层记忆（短期/中期/长期）+ 人物连接。负责组件注册、生命周期、提示词
-模板注册与短期记忆后台任务调度。
+模板注册、记忆使用引导语注册与后台任务调度（短期总结/清理/人物蒸馏巡检）。
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ from .config import EngramMemoryConfig
 from .event_handler.flashback_injector import FlashbackInjector
 from .event_handler.private_chat_person_injector import PrivateChatPersonInjector
 from .event_handler.short_term_injector import ShortTermInjector
-from .prompts import PROMPT_TEMPLATES
+from .metrics import get_metrics
+from .prompts import MEMORY_GUIDE_REMINDER, PROMPT_TEMPLATES
 from .router.memory_admin_router import MemoryAdminRouter
 from .service.memory_service import MemoryService
 from .service.person_service import PersonService
@@ -40,6 +41,8 @@ _SUMMARIZER_INTERVAL_DEFAULT = 30
 _CLEANUP_INTERVAL_SECONDS = 3600
 # 调度注册重试次数
 _SCHEDULE_RETRY_MAX = 600
+# 短期层规则晋升的最低激活次数阈值（被主动检索/阅读过≥2次认为有保留价值）
+_PROMOTE_MIN_ACTIVATION = 2
 
 
 def make_config_factory(plugin: Any) -> Any:
@@ -103,12 +106,26 @@ class EngramMemoryPlugin(BasePlugin):
     # ------------------------------------------------------------------
 
     async def on_plugin_loaded(self) -> None:
-        """插件加载完成后：注册提示词模板、预创建共享 store 并启动后台任务注册。"""
+        """插件加载完成后：注册提示词模板、记忆使用引导语并启动后台任务注册。"""
         for name, template in PROMPT_TEMPLATES.items():
             try:
                 prompt_api.register_template(PromptTemplate(name=name, template=template))
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"注册提示词模板失败 {name}: {exc}")
+
+        # 记忆使用引导语注册到全局 actor bucket（chatter 以
+        # with_reminder="actor" 创建请求时自动拾取）
+        try:
+            from src.core.prompt import SystemReminderInsertType
+
+            prompt_api.add_system_reminder(
+                bucket="actor",
+                name="engram_memory_guide",
+                content=MEMORY_GUIDE_REMINDER,
+                insert_type=SystemReminderInsertType.FIXED,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"注册记忆引导语失败: {exc}")
 
         # 预创建共享 store（含 repo 初始化）
         try:
@@ -126,7 +143,14 @@ class EngramMemoryPlugin(BasePlugin):
         self._register_task_id = task.task_id
 
     async def on_plugin_unloaded(self) -> None:
-        """插件卸载前：关闭 repo、移除调度并取消后台注册任务。"""
+        """插件卸载前：移除引导语、关闭 repo、移除调度并取消后台注册任务。"""
+        try:
+            from src.core.prompt.system_reminder import get_system_reminder_store
+
+            get_system_reminder_store().delete("actor", "engram_memory_guide")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"移除记忆引导语失败: {exc}")
+
         try:
             repo = shared_repo(self, make_config_factory(self))
             await repo.close()
@@ -179,7 +203,7 @@ class EngramMemoryPlugin(BasePlugin):
                 ("engram_memory_short_term_cleanup", _CLEANUP_INTERVAL_SECONDS, self._run_cleanup_job)
             )
 
-        # 人物蒸馏夜间巡检：persona.enabled 时注册（每小时检查，回调内判定触发小时）
+        # 人物蒸馏巡检：persona.enabled 时注册（每小时检查当天活跃人物）
         if config.persona.enabled:
             plans.append(
                 ("engram_memory_persona_patrol", _CLEANUP_INTERVAL_SECONDS, self._run_persona_patrol_job)
@@ -224,7 +248,7 @@ class EngramMemoryPlugin(BasePlugin):
         await self._run_job_locked("cleanup", self._do_cleanup)
 
     async def _run_persona_patrol_job(self) -> None:
-        """人物蒸馏夜间巡检回调（回调内判定触发小时）。"""
+        """人物蒸馏巡检任务回调。"""
         await self._run_job_locked("persona_patrol", self._do_persona_patrol)
 
     async def _run_job_locked(self, name: str, job) -> None:
@@ -252,7 +276,7 @@ class EngramMemoryPlugin(BasePlugin):
         await summarize_short_term(self, store, memory_service)
 
     async def _do_persona_patrol(self) -> None:
-        """夜间巡检：对当天活跃人物执行懒加载蒸馏（未达标自动跳过）。"""
+        """每小时巡检：对当天活跃人物执行懒加载蒸馏（未达标自动跳过）。"""
         if not isinstance(self.config, EngramMemoryConfig):
             return
         config = self.config
@@ -290,8 +314,10 @@ class EngramMemoryPlugin(BasePlugin):
                 else:
                     skipped += 1
             except Exception as exc:  # noqa: BLE001
-                logger.debug(f"夜间巡检蒸馏失败 {platform}:{user_id}: {exc}")
-        logger.info(f"人物夜间巡检完成: distilled={distilled} skipped={skipped}")
+                logger.debug(f"巡检蒸馏失败 {platform}:{user_id}: {exc}")
+        get_metrics(self).incr("person_distilled", distilled)
+        get_metrics(self).incr("person_distill_skipped", skipped)
+        logger.info(f"人物蒸馏巡检完成: distilled={distilled} skipped={skipped}")
 
     async def _do_cleanup(self) -> None:
         """执行短期层清理：TTL 过期 + 数量上限（超限删最旧）。"""
@@ -313,6 +339,26 @@ class EngramMemoryPlugin(BasePlugin):
             )
 
         cleaned = 0
+
+        # 0) 规则晋升：激活达标的短期记忆先晋升 active（copy-then-delete，
+        #    失败不影响后续清理）
+        try:
+            promotable = await repo.list_short_term_promotable(
+                now=now, min_activation=_PROMOTE_MIN_ACTIVATION
+            )
+            memory_service = MemoryService(self)
+            promoted = 0
+            for record in promotable:
+                try:
+                    if await memory_service.promote_memory(record.memory_id, "active"):
+                        promoted += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(f"短期记忆晋升失败 {record.memory_id}: {exc}")
+            if promoted:
+                get_metrics(self).incr("promoted_count", promoted)
+                logger.info(f"短期记忆规则晋升: {promoted} 条 short_term -> active")
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"短期记忆晋升查询失败: {exc}")
 
         # 1) TTL 过期清理
         expired = await repo.list_expired_short_term(now=now)

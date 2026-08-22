@@ -89,18 +89,28 @@ class PrivateChatPersonInjector(BaseEventHandler):
             self._clear(stream_id)
             return EventDecision.SUCCESS, params
 
-        # 复用 person_lookup 逻辑：取人物认知 + 相关记忆（含关系线索）
+        # 取相关记忆（轻量直查，不走 lookup_person 的完整链路，避免触发
+        # 懒蒸馏等重操作阻塞 prompt 构建）
         related_memories: list[dict[str, Any]] = []
         try:
             from ..service.person_service import PersonService
 
-            lookup = await PersonService(self.plugin).lookup_person(
-                f"{platform}:{sender_id}"
+            person_service = PersonService(self.plugin)
+            related_memories = await person_service._search_person_memories(
+                await person_service._memory_service(None),
+                f"{platform}:{sender_id}",
             )
-            if lookup.get("ok"):
-                related_memories = list(lookup.get("memories") or [])
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"私聊注入获取相关记忆失败 {platform}:{sender_id}: {exc}")
+
+        # 缺印象时调度后台蒸馏（不阻塞本次注入；完成后下次对话生效）
+        if not str(person.impression or "").strip():
+            try:
+                from ..service.person_service import schedule_background_distill
+
+                schedule_background_distill(self.plugin, platform, sender_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"调度后台蒸馏失败 {platform}:{sender_id}: {exc}")
 
         content = self._format_content(person, related_memories)
         try:

@@ -17,6 +17,87 @@ if TYPE_CHECKING:
 
 logger = log_api.get_logger("engram_memory.person_service")
 
+# 后台蒸馏防重复集合挂在插件实例上的属性名
+_PENDING_DISTILL_ATTR = "_engram_memory_pending_distills"
+
+
+def _pending_distills(plugin: Any) -> set[str]:
+    """获取挂载在插件实例上的蒸馏挂起人物集合（防重复调度）。"""
+    pending = getattr(plugin, _PENDING_DISTILL_ATTR, None)
+    if not isinstance(pending, set):
+        pending = set()
+        setattr(plugin, _PENDING_DISTILL_ATTR, pending)
+    return pending
+
+
+def schedule_background_distill(plugin: Any, platform: str, user_id: str) -> bool:
+    """将人物印象蒸馏调度为后台任务（不阻塞调用方）。
+
+    同一人物同时只允许一个蒸馏任务在跑；已在跑时跳过。
+
+    Args:
+        plugin: 插件实例。
+        platform: 平台标识。
+        user_id: 平台用户 ID。
+
+    Returns:
+        是否成功创建了后台任务。
+    """
+    raw_person_id = f"{platform}:{user_id}"
+    pending = _pending_distills(plugin)
+    if raw_person_id in pending:
+        return False
+
+    async def _run() -> None:
+        """后台执行一次懒蒸馏，结束后从挂起集合移除。"""
+        try:
+            await ensure_person_impression_lazy(plugin, raw_person_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"后台蒸馏失败 {raw_person_id}: {exc}")
+        finally:
+            pending.discard(raw_person_id)
+
+    try:
+        from src.kernel.concurrency import get_task_manager
+
+        task_manager = get_task_manager()
+        task_manager.create_task(
+            _run(),
+            name=f"engram_memory_distill_{raw_person_id}",
+            daemon=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        pending.discard(raw_person_id)
+        logger.error(f"调度后台蒸馏失败 {raw_person_id}: {exc}")
+        return False
+    return True
+
+
+def make_config_factory(plugin: Any) -> Any:
+    """构造无参配置回调（供 store 惰性创建）。"""
+
+    def _config_factory() -> Any:
+        from ..config import EngramMemoryConfig
+
+        if isinstance(plugin.config, EngramMemoryConfig):
+            return plugin.config
+        return EngramMemoryConfig()
+
+    return _config_factory
+
+
+async def ensure_person_impression_lazy(plugin: Any, raw_person_id: str) -> None:
+    """在当前协程内执行懒蒸馏（供后台任务调用，失败不抛出）。"""
+    from .persona_distiller import ensure_person_impression
+    from ..store import shared_store
+    from ..config import EngramMemoryConfig
+
+    config = plugin.config
+    if not isinstance(config, EngramMemoryConfig):
+        config = EngramMemoryConfig()
+    store = shared_store(plugin, make_config_factory(plugin))
+    await ensure_person_impression(plugin, store, config, raw_person_id)
+
 
 class PersonService(BaseService):
     """人物认知读写与 person_lookup 逻辑。"""
@@ -49,7 +130,7 @@ class PersonService(BaseService):
         return shared_store(self.plugin, self._get_config)
 
     async def _ensure_impression_lazy(self, platform: str, user_id: str) -> None:
-        """懒加载蒸馏：样本足够时蒸馏该人物印象（失败不抛出）。"""
+        """懒加载蒸馏（同步执行，仅供巡检/手动路径使用）。"""
         from .persona_distiller import ensure_person_impression
 
         await ensure_person_impression(
@@ -95,13 +176,14 @@ class PersonService(BaseService):
         if person is None:
             return {"ok": False, "error": "person_id 不存在"}
 
-        # 懒加载蒸馏：缺印象且样本足够时立即蒸馏；已蒸馏则保持
+        # 懒加载蒸馏：缺印象或样本足够时调度到后台执行，阻塞路径只读不写。
+        # 蒸馏完成后写入 PersonInfo.impression，下次对话/查询即生效
         config = self._get_config()
         if config.persona.enabled:
             try:
-                await self._ensure_impression_lazy(platform, user_id)
+                schedule_background_distill(self.plugin, platform, user_id)
             except Exception as exc:  # noqa: BLE001
-                logger.debug(f"懒加载蒸馏失败 {platform}:{user_id}: {exc}")
+                logger.debug(f"调度后台蒸馏失败 {platform}:{user_id}: {exc}")
 
         memory_svc = self._memory_service(memory_service)
         memories = await self._search_person_memories(

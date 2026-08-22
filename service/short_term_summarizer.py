@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING, Any
 from src.app.plugin_system.api import log_api, stream_api
 from src.core.models.message import Message
 
+from ..metrics import get_metrics
 from ..prompts import SUMMARY_PROMPT, SUMMARY_PROMPT_NAME
-from ..sub_agent import call_sub_agent, extract_json_array, resolve_prompt
+from ..sub_agent import call_json_sub_agent, resolve_prompt
 from .memory_service import MemoryService, normalize_person_id
 
 if TYPE_CHECKING:
@@ -110,8 +111,13 @@ async def _summarize_stream(
     if len(new_messages) < threshold:
         return 0
 
-    # 取最后 threshold*2 条（避免超长）
-    batch = new_messages[-threshold * 2 :] if len(new_messages) > threshold * 2 else new_messages
+    # 从最旧的消息开始取 threshold*2 条作为本批（避免超长）。锚点推进到
+    # 本批末尾：若积压超过批次上限，较新的消息留待下轮继续总结，
+    # 不会被永久跳过
+    if len(new_messages) > threshold * 2:
+        batch = new_messages[: threshold * 2]
+    else:
+        batch = new_messages
     chat_flow = _format_messages(batch)
     if not chat_flow.strip():
         return 0
@@ -128,18 +134,25 @@ async def _summarize_stream(
     system_prompt = resolve_prompt(SUMMARY_PROMPT_NAME, SUMMARY_PROMPT).format(
         bot_name="Engram Memory",
         stream_name=stream_name,
-        messages=chat_flow,
     )
-    raw = await call_sub_agent(
+    items, status = await call_json_sub_agent(
         task=str(config.internal_llm.task_name),
         request_name="engram_memory_short_term_summary",
         system=system_prompt,
         user=chat_flow,
         stream_id=stream_id,
     )
-    items = extract_json_array(raw)
+    if status == "error":
+        # 调用/解析失败：不更新锚点，下轮自动重试本批消息
+        get_metrics(plugin).incr("summarizer_parse_errors")
+        return 0
     if not items:
         return 0
+
+    # 本批真实人物集合（roster）：LLM 输出的 person_id 必须在此集合内，
+    # 杜绝格式合法但事实错误（编造）的人物 ID 落库
+    roster = {_person_id_of(m) for m in batch}
+    roster.discard("")
 
     # 批次中间时间戳作为 event_time
     times = [_message_time(m) for m in batch]
@@ -152,13 +165,20 @@ async def _summarize_stream(
         if not title or not content:
             continue
 
-        # person_id/related_people 写入前校验（与 memory_service 规则一致），
-        # 避免 LLM 输出昵称/纯数字等非法格式入库
+        # person_id/related_people 写入前校验：格式合法 + 必须在本批 roster 内
         person_id = normalize_person_id(item.get("person_id"))
+        if person_id and roster and person_id not in roster:
+            logger.warning(f"短期总结剔除编造 person_id: {person_id}")
+            person_id = None
         related_people: list[str] = []
         for raw in (item.get("related_people") or []):
             cleaned = normalize_person_id(raw)
-            if cleaned and cleaned not in related_people:
+            if not cleaned:
+                continue
+            if roster and cleaned not in roster:
+                logger.warning(f"短期总结剔除编造 related_people: {cleaned}")
+                continue
+            if cleaned not in related_people:
                 related_people.append(cleaned)
         try:
             await memory_service.write_memory(
@@ -177,9 +197,9 @@ async def _summarize_stream(
         except Exception as exc:  # noqa: BLE001
             logger.error(f"短期记忆写入失败 stream={stream_id}: {exc}")
 
-    # 更新锚点
-    if new_messages:
-        last_message = new_messages[-1]
+    # 更新锚点：推进到本批最后一条（未入批的积压消息保持待消费状态）
+    if batch:
+        last_message = batch[-1]
         anchors[stream_id] = {
             "last_message_time": _message_time(last_message),
             "last_message_id": str(last_message.message_id or ""),
@@ -224,4 +244,8 @@ async def summarize_short_term(
             logger.error(f"短期总结流失败 {stream_id}: {exc}")
 
     logger.info(f"短期总结完成: scanned={scanned} written={written} errors={errors}")
+    metrics = get_metrics(plugin)
+    metrics.incr("summarizer_scanned", scanned)
+    metrics.incr("summarizer_written", written)
+    metrics.incr("summarizer_errors", errors)
     return {"scanned": scanned, "written": written, "errors": errors}

@@ -22,6 +22,7 @@ from src.kernel.event import EventDecision
 from src.kernel.vector_db import get_vector_db_service
 
 from ..config import EngramMemoryConfig
+from ..metrics import get_metrics
 from ..service.rag.vector_ops import cosine_similarity, embed_texts, to_float_vector
 
 logger = log_api.get_logger("engram_memory.flashback_injector")
@@ -234,7 +235,12 @@ class FlashbackInjector(BaseEventHandler):
 
         title = str(chosen.get("title") or "")
         document = str(chosen.get("document") or "")
-        summary = document[100:] if len(document) > 100 else document
+        # 存储格式为 "# {title}\n{content}"，剥离标题行后取正文前 100 字作摘要，
+        # 避免丢弃最关键的开头内容
+        body = document
+        if title and document.startswith(f"# {title}"):
+            body = document[len(f"# {title}") :].lstrip("\n")
+        summary = body[:100] if len(body) > 100 else body
 
         content = (
             "## 记忆闪回\n"
@@ -246,6 +252,7 @@ class FlashbackInjector(BaseEventHandler):
 
         # 记录冷却
         self._recent_flashbacks[str(chosen["memory_id"])] = now
+        get_metrics(self.plugin).incr("flashback_injected")
 
         try:
             prompt_api.add_stream_reminder(

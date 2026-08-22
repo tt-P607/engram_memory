@@ -109,14 +109,19 @@ class MemoryService(BaseService):
         """返回检索结果去重器。"""
         return EngramMemoryDeduplicator()
 
-    @staticmethod
-    def _normalize_tags(tags: list[str] | None) -> list[str]:
-        """归一化标签：去空白、转小写、去重。"""
+    # 无信息量占位标签（历史 prompt 曾要求 general 占位，统一清洗）
+    _PLACEHOLDER_TAGS = frozenset({"general", "无", "none", "null"})
+
+    @classmethod
+    def _normalize_tags(cls, tags: list[str] | None) -> list[str]:
+        """归一化标签：去空白、转小写、去重、剔除无信息占位词。"""
         seen: set[str] = set()
         result: list[str] = []
         for tag in tags or []:
             cleaned = str(tag).strip().lower()
-            if cleaned and cleaned not in seen:
+            if not cleaned or cleaned in cls._PLACEHOLDER_TAGS:
+                continue
+            if cleaned not in seen:
                 seen.add(cleaned)
                 result.append(cleaned)
         return result
@@ -348,6 +353,111 @@ class MemoryService(BaseService):
             if source_id not in new_relations:
                 new_relations.append(source_id)
             await repo.update_record(target_id, relation_memory_ids=new_relations)
+
+    async def promote_memory(
+        self,
+        memory_id: str,
+        target_layer: str = "active",
+    ) -> bool:
+        """将记忆晋升到目标层（copy-then-delete，保证数据安全）。
+
+        流程：向量库先从源 collection 读取 → 写入目标 collection →
+        成功后删除源向量；元数据仅 upsert 更新 layer/expires_at。
+        任一向量步骤失败时不删源、不改元数据，保持原状等待重试。
+
+        Args:
+            memory_id: 记忆 ID。
+            target_layer: 目标层（active/archived）。
+
+        Returns:
+            是否晋升成功。
+        """
+        target_layer = str(target_layer or "").strip().lower()
+        if target_layer not in COLLECTION_BY_LAYER:
+            raise ValueError(f"非法目标层: {target_layer!r}")
+        if target_layer == "short_term":
+            raise ValueError("不支持晋升到短期层")
+
+        repo = self._get_repo()
+        record = await repo.get_record(memory_id)
+        if record is None or record.is_deleted:
+            logger.warning(f"晋升目标不存在或已删除: {memory_id}")
+            return False
+        if record.layer == target_layer:
+            return True
+
+        vector_db = self._get_vector_db()
+        source_collection = self._layer_collection(record.layer)
+        target_collection = self._layer_collection(target_layer)
+
+        # 1) 从源 collection 读取现有向量与文档（复用原 embedding，不重算）
+        try:
+            result = await vector_db.get(
+                collection_name=source_collection,
+                ids=[memory_id],
+                include=["embeddings", "documents", "metadatas"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"晋升读取源向量失败 {memory_id}: {exc}")
+            return False
+        vectors = self._safe_first_row(result.get("embeddings", [[]]))
+        documents_row = result.get("documents", [])
+        documents = (
+            documents_row[0][0] if documents_row and documents_row[0] else ""
+        )
+        metadatas_row = result.get("metadatas", [])
+        metadata = (
+            metadatas_row[0][0] if metadatas_row and metadatas_row[0] else {}
+        )
+        if not vectors or not documents:
+            logger.error(f"晋升源向量缺失 {memory_id}（source={source_collection}）")
+            return False
+        vector = to_float_vector(
+            vectors[0] if len(vectors) == 1 else vectors[0],
+            source="promote",
+            collection_name=source_collection,
+        )
+        if not vector:
+            logger.error(f"晋升向量格式非法 {memory_id}")
+            return False
+
+        # 2) 先写入目标 collection（未成功前不动源数据）
+        new_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        new_metadata["layer"] = target_layer
+        new_metadata["is_deleted"] = 0
+        new_metadata["updated_at"] = time.time()
+        try:
+            await vector_db.add(
+                collection_name=target_collection,
+                embeddings=[vector],
+                documents=[documents],
+                metadatas=[sanitize_vector_metadata(new_metadata)],
+                ids=[memory_id],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"晋升写入目标向量失败 {memory_id}: {exc}")
+            return False
+
+        # 3) 成功后删除源向量
+        try:
+            await vector_db.delete(
+                collection_name=source_collection,
+                ids=[memory_id],
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 目标已写入、源删除失败 → 短暂双写可接受，记录后继续
+            logger.warning(f"晋升删除源向量失败 {memory_id}（目标已写入，短暂双写）: {exc}")
+
+        # 4) 元数据 upsert：仅更新层与 TTL 字段，其余保留
+        await repo.update_record(
+            memory_id,
+            layer=target_layer,
+            expires_at=None,
+        )
+        logger.info(
+            f"记忆晋升完成 {memory_id}: {record.layer} -> {target_layer}"
+        )
+        return True
 
     # ------------------------------------------------------------------
     # 检索

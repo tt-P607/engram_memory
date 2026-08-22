@@ -30,7 +30,6 @@ logger = get_logger("engram_memory.store")
 # 插件实例上挂载共享对象用的属性名
 _PLUGIN_ATTR_STORE = "_engram_memory_store"
 _PLUGIN_ATTR_REPO = "_engram_memory_repo"
-_PLUGIN_ATTR_LOCKS = "_engram_memory_job_locks"
 
 
 def shared_repo(
@@ -53,15 +52,6 @@ def shared_repo(
         repo = EngramMemoryMetadataRepository(db_path)
         setattr(plugin, _PLUGIN_ATTR_REPO, repo)
     return repo
-
-
-def shared_locks(plugin: "BasePlugin") -> dict[str, asyncio.Lock]:
-    """获取挂载在插件实例上的任务互斥锁表（key=任务名）。"""
-    locks = getattr(plugin, _PLUGIN_ATTR_LOCKS, None)
-    if locks is None:
-        locks = {}
-        setattr(plugin, _PLUGIN_ATTR_LOCKS, locks)
-    return locks
 
 
 def shared_store(

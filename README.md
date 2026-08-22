@@ -4,11 +4,12 @@ Neo-MoFox 三层记忆插件：短期 / 中期 / 长期记忆 + 人物连接。
 
 ## 功能
 
-- **三层记忆**：短期（48h TTL）→ 中期（活跃缓冲）→ 长期（永久归档），跨群全局检索
+- **三层记忆**：短期（48h TTL）→ 中期（活跃缓冲）→ 长期（永久归档），跨群全局检索；短期层被主动检索命中汰 2 次会自动晋升中期
 - **人物连接**：通过 `person_lookup` 查询人物认知（昵称 / 印象 / 交互时间线）与相关记忆索引
-- **人物印象懒加载蒸馏**：基于人物本人跨流文本消息（攒够 1000 条）自动蒸馏印象，懒加载 + 夜间巡检触发，不浪费 LLM
+- **人物印象懒加载蒸馏**：基于人物本人跨流文本消息自动蒸馏印象，懒加载（后台异步）+ 每小时巡检触发，不浪费 LLM
+- **记忆引导语**：插件加载时注册全局 actor reminder，指弓 LLM 何时查/写记忆
 - **记忆闪回**：基于语义关联的概率性联想注入
-- **管理后台**：Web 页面 + REST API，可查看 / 编辑 / 删除记忆
+- **管理后台**：Web 页面 + REST API，可查看 / 编辑 / 删除记忆与运行指标
 
 ## 组件
 
@@ -45,11 +46,12 @@ Neo-MoFox 三层记忆插件：短期 / 中期 / 长期记忆 + 人物连接。
 
 配置示例见 `config/plugins/engram_memory/config.toml`，主要节：
 
-- `storage`：元数据库 / 向量库 / 日记存储路径
+- `storage`：元数据库 / 向量库路径
 - `short_term`：TTL、总结周期、注入阈值与条数、数量上限
-- `journal`：触发小时、启动补偿阈值、活跃流判定、印象字数上限
+- `journal`：印象字数上限
 - `flashback`：闪回概率、灰色地带、冷却期
 - `internal_llm`：内部子代理使用的模型任务名
+- `persona`：人物蒸馏门槛与分块参数
 
 ## 数据存储
 
@@ -57,7 +59,7 @@ Neo-MoFox 三层记忆插件：短期 / 中期 / 长期记忆 + 人物连接。
 |------|------|
 | 记忆元数据 | SQLite（`data/engram_memory/memory.db`） |
 | 记忆向量 | ChromaDB（`data/engram_memory/chroma`） |
-| 日记 | Markdown 文件（`data/engram_memory/journals`） |
+| 状态文件（总结锚点/蒸馏元数据） | `data/engram_memory/.summarizer_anchors.json` `.persona_distill.json` |
 
 ## 开发
 

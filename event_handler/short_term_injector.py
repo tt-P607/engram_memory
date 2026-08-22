@@ -18,6 +18,7 @@ from src.kernel.event import EventDecision
 from src.kernel.vector_db import get_vector_db_service
 
 from ..config import EngramMemoryConfig
+from ..metrics import get_metrics
 from ..service.memory_service import MemoryService
 from ..service.rag.vector_ops import cosine_similarity, embed_texts, to_float_vector
 
@@ -53,12 +54,56 @@ class ShortTermInjector(BaseEventHandler):
             text = str(message.content or "").strip()
         return text
 
+    async def _build_query_text(
+        self,
+        stream_id: str,
+        current_text: str,
+    ) -> str:
+        """构建检索文本：最近几轮消息 + 当前消息，增强短消息/代词场景召回。
+
+        拉取历史失败时退化为仅当前消息，不阻塞注入。
+        """
+        try:
+            from src.app.plugin_system.api import stream_api
+
+            messages = await stream_api.get_stream_messages(stream_id, limit=8)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"拉取近期消息失败 stream={stream_id}: {exc}")
+            return current_text
+        recent: list[str] = []
+        for message in messages:
+            role = str(message.sender_role or "").lower()
+            if role == "bot":
+                text = str(message.processed_plain_text or message.content or "").strip()
+                if text:
+                    recent.append(f"我: {text[:60]}")
+            else:
+                name = str(message.sender_name or message.sender_id or "").strip()
+                text = str(message.processed_plain_text or message.content or "").strip()
+                if text:
+                    recent.append(f"{name}: {text[:60]}")
+        # 最近在末尾；保留最近 6 条 + 当前消息，当前消息权重最高放最后
+        window = recent[-6:]
+        window.append(current_text)
+        return "\n".join(window)
+
     async def _collect_candidates(
         self,
         query_vector: list[float],
         config: EngramMemoryConfig,
+        *,
+        exclude_stream_id: str = "",
     ) -> list[dict[str, Any]]:
-        """检索短期层记忆并过滤相似度阈值。"""
+        """检索短期层记忆并过滤相似度阈值。
+
+        Args:
+            query_vector: 查询向量。
+            config: 插件配置。
+            exclude_stream_id: 排除该流来源的记忆（跨群注入不混入本流）。
+
+        Returns:
+            候选记忆列表（按相似度降序，截断到 inject_max）。
+        """
         vector_db = get_vector_db_service(str(config.storage.vector_db_path))
         try:
             count = await vector_db.count(self._COLLECTION)
@@ -100,11 +145,14 @@ class ShortTermInjector(BaseEventHandler):
                 continue
             metadata = metadatas_row[index] if index < len(metadatas_row) else {}
             metadata = metadata if isinstance(metadata, dict) else {}
+            memory_stream_id = str(metadata.get("stream_id") or "")
+            if exclude_stream_id and memory_stream_id == exclude_stream_id:
+                continue
             candidates.append(
                 {
                     "memory_id": memory_id,
                     "title": str(metadata.get("title") or ""),
-                    "stream_id": str(metadata.get("stream_id") or ""),
+                    "stream_id": memory_stream_id,
                     "similarity": similarity,
                     "document": documents_row[index] if index < len(documents_row) else "",
                 }
@@ -137,12 +185,16 @@ class ShortTermInjector(BaseEventHandler):
             return EventDecision.SUCCESS, params
 
         try:
+            # 多轮窗口检索文本（短消息/代词场景召回更稳）
+            query_text = await self._build_query_text(stream_id, text)
             query_vector = (await embed_texts(
-                [text],
+                [query_text],
                 task_name=str(config.internal_llm.embedding_task_name),
                 request_name="engram_memory_inject_short_term",
             ))[0]
-            candidates = await self._collect_candidates(query_vector, config)
+            candidates = await self._collect_candidates(
+                query_vector, config, exclude_stream_id=stream_id
+            )
         except Exception as exc:  # noqa: BLE001
             logger.error(f"短期记忆注入失败 stream={stream_id}: {exc}")
             self._clear(stream_id)
@@ -152,13 +204,25 @@ class ShortTermInjector(BaseEventHandler):
             self._clear(stream_id)
             return EventDecision.SUCCESS, params
 
-        # 组装注入文本
+        get_metrics(self.plugin).incr("short_term_injected")
+
+        # 组装注入文本：标题 + 事实摘要（document 为 "# 标题\n正文"，
+        # 剥离标题行后取正文，让 LLM 不必二次调工具即可消费）
         memory_service = MemoryService(self.plugin)
-        lines: list[str] = ["## 近期群聊记忆", "以下是你近期在其他聊天流中记住的事情，供你参考："]
+        lines: list[str] = ["## 近期记忆", "以下是你近期记住的事情（来自各聊天流的自动总结），可直接使用："]
         for candidate in candidates:
+            title = str(candidate.get("title") or "").strip() or "未命名"
+            document = str(candidate.get("document") or "")
+            body = document
+            if title != "未命名" and document.startswith(f"# {title}"):
+                body = document[len(f"# {title}") :].lstrip("\n")
+            summary = body[:80].strip()
             source = await memory_service.map_source(candidate.get("stream_id") or "")
-            lines.append(f"- {candidate.get('title') or '未命名'}（来源：{source}）")
-        lines.append("注：这些是自动总结的近期记忆，你可能需要主动回忆更多细节。")
+            if summary:
+                lines.append(f"- {title}：{summary}（来源：{source}）")
+            else:
+                lines.append(f"- {title}（来源：{source}）")
+        lines.append("注：以上为自动总结的近期记忆；需要完整细节时可用 memory_read 读取。")
         content = "\n".join(lines)
 
         try:
