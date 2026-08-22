@@ -761,7 +761,7 @@ async def distill_person(
     # 写印象
     try:
         await person_api.update_user_impression(
-            platform, user_id, impression=impression_text[:max_chars]
+            platform, user_id, impression=impression_text
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(f"写入印象失败 {raw_person_id}: {exc}")

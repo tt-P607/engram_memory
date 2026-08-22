@@ -10,10 +10,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from src.app.plugin_system.api import log_api, person_api, prompt_api
+from src.app.plugin_system.api import log_api, prompt_api
 from src.app.plugin_system.base import BaseEventHandler
 from src.app.plugin_system.types import EventType
-from src.core.models.message import Message
 from src.core.prompt import SystemReminderConsumeType, SystemReminderInsertType
 from src.kernel.event import EventDecision
 
@@ -39,15 +38,35 @@ class PrivateChatPersonInjector(BaseEventHandler):
     init_subscribe: list[EventType | str] = [EventType.ON_PROMPT_BUILD]
     _REMINDER_NAME = "engram_memory_person"
 
-    def _get_msg(self, params: dict[str, Any]) -> Any | None:
-        """从事件参数提取触发消息。"""
-        values = params.get("values") or {}
-        return values.get("message")
-
     def _get_stream_id(self, params: dict[str, Any]) -> str:
         """从事件参数提取流 ID。"""
         values = params.get("values") or {}
         return str(values.get("stream_id") or "").strip()
+
+    async def _get_stream_identity(
+        self, stream_id: str
+    ) -> tuple[str, str, str] | None:
+        """查 ChatStreams 拿 (chat_type, platform, person_id)。
+
+        事件参数不含 message，从流记录取对话对象。
+        person_id 为哈希（sha256），需反查 PersonInfo 拿 platform/user_id。
+        """
+        try:
+            from src.app.plugin_system.api import database_api
+            from src.core.models.sql_alchemy import ChatStreams
+
+            row = await database_api.get_by(ChatStreams, stream_id=stream_id)
+            if not row:
+                return None
+            chat_type = str(getattr(row, "chat_type", "") or "").strip()
+            person_id = str(getattr(row, "person_id", "") or "").strip()
+            platform = str(getattr(row, "platform", "") or "").strip()
+            if not chat_type or not person_id:
+                return None
+            return chat_type, platform, person_id
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"查询流身份失败 stream={stream_id}: {exc}")
+            return None
 
     async def execute(
         self,
@@ -59,33 +78,34 @@ class PrivateChatPersonInjector(BaseEventHandler):
         if not stream_id:
             return EventDecision.SUCCESS, params
 
-        message = self._get_msg(params)
-        if message is None:
+        identity = await self._get_stream_identity(stream_id)
+        if identity is None:
             self._clear(stream_id)
             return EventDecision.SUCCESS, params
-        if not isinstance(message, Message):
-            self._clear(stream_id)
-            return EventDecision.SUCCESS, params
+        chat_type, platform, hashed_person_id = identity
 
         # 仅私聊注入
-        chat_type = str(message.chat_type or "").strip()
         if chat_type != "private":
             self._clear(stream_id)
             return EventDecision.SUCCESS, params
 
-        platform = str(message.platform or "").strip()
-        sender_id = str(message.sender_id or "").strip()
-        if not platform or not sender_id:
-            self._clear(stream_id)
-            return EventDecision.SUCCESS, params
-
+        # 哈希 person_id → 反查 PersonInfo（主键即哈希）
         try:
-            person = await person_api.get_person(platform, sender_id)
+            from src.app.plugin_system.api import database_api
+            from src.core.models.sql_alchemy import PersonInfo
+
+            person = await database_api.get_by(PersonInfo, person_id=hashed_person_id)
         except Exception as exc:  # noqa: BLE001
-            logger.error(f"读取人物信息失败 {platform}:{sender_id}: {exc}")
+            logger.error(f"反查人物失败 {hashed_person_id[:8]}: {exc}")
             self._clear(stream_id)
             return EventDecision.SUCCESS, params
         if person is None:
+            self._clear(stream_id)
+            return EventDecision.SUCCESS, params
+
+        sender_id = str(getattr(person, "user_id", "") or "").strip()
+        platform = str(getattr(person, "platform", "") or platform or "").strip()
+        if not sender_id:
             self._clear(stream_id)
             return EventDecision.SUCCESS, params
 
@@ -97,7 +117,7 @@ class PrivateChatPersonInjector(BaseEventHandler):
 
             person_service = PersonService(self.plugin)
             related_memories = await person_service._search_person_memories(
-                await person_service._memory_service(None),
+                person_service._memory_service(None),
                 f"{platform}:{sender_id}",
             )
         except Exception as exc:  # noqa: BLE001
@@ -132,8 +152,15 @@ class PrivateChatPersonInjector(BaseEventHandler):
     ) -> str:
         """格式化人物认知文本（含印象 + 相关记忆/关系线索）。"""
         nickname = str(person.nickname or "") or "未知用户"
+        user_id = str(getattr(person, "user_id", "") or "").strip()
+        platform = str(getattr(person, "platform", "") or "").strip()
 
         lines: list[str] = ["## 当前对话对象", f"昵称：{nickname}"]
+        if user_id:
+            if platform:
+                lines.append(f"账号/ID：{platform}:{user_id}")
+            else:
+                lines.append(f"账号/ID：{user_id}")
 
         # 历史昵称
         history = self._nickname_history_text(person)
@@ -152,13 +179,19 @@ class PrivateChatPersonInjector(BaseEventHandler):
         impression = str(person.impression or "").strip()
         lines.append(f"印象：{impression if impression else '暂无印象'}")
 
-        # 相关记忆（含与这个人有关的过往与关系线索）
+        # 相关记忆（含与这个人有关的过往与关系线索；带 id 供 memory_read 查询）
         memories = related_memories or []
         if memories:
-            titles = [str(m.get("title") or "").strip() for m in memories]
-            titles = [t for t in titles if t]
-            if titles:
-                lines.append("相关记忆：" + "；".join(titles[:8]))
+            entries = []
+            for m in memories[:8]:
+                title = str(m.get("title") or "").strip()
+                mid = str(m.get("memory_id") or "").strip()
+                if not title:
+                    continue
+                entries.append(f"{title}（{mid}）" if mid else title)
+            if entries:
+                lines.append("相关记忆：" + "；".join(entries))
+                lines.append("（需要某条记忆详情时，可用 memory_read 按上方 id 查询）")
 
         return "\n".join(lines)
 

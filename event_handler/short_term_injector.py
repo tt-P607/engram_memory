@@ -41,12 +41,18 @@ class ShortTermInjector(BaseEventHandler):
             return config
         return EngramMemoryConfig()
 
-    def _get_msg_text(self, params: dict[str, Any]) -> str:
-        """从事件参数提取消息文本；无消息或无文本时返回空字符串。"""
-        values = params.get("values") or {}
-        message = values.get("message")
-        if message is None:
+    async def _get_msg_text(self, stream_id: str) -> str:
+        """从流上下文取最近一条消息文本；无消息或无文本时返回空字符串。"""
+        try:
+            from src.app.plugin_system.api import stream_api
+
+            messages = await stream_api.get_stream_messages(stream_id, limit=1)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"拉取当前消息失败 stream={stream_id}: {exc}")
             return ""
+        if not messages:
+            return ""
+        message = messages[0]
         if not isinstance(message, Message):
             return ""
         text = str(message.processed_plain_text or "").strip()
@@ -118,7 +124,7 @@ class ShortTermInjector(BaseEventHandler):
                 collection_name=self._COLLECTION,
                 query_embeddings=[query_vector],
                 n_results=n_results,
-                include=["ids", "metadatas", "embeddings", "documents"],
+                include=["metadatas", "embeddings", "documents"],
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"检索短期集合失败: {exc}")
@@ -179,7 +185,7 @@ class ShortTermInjector(BaseEventHandler):
             self._clear(stream_id)
             return EventDecision.SUCCESS, params
 
-        text = self._get_msg_text(params)
+        text = await self._get_msg_text(stream_id)
         if not text:
             self._clear(stream_id)
             return EventDecision.SUCCESS, params

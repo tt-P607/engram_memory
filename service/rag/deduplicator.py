@@ -1,6 +1,7 @@
 """engram_memory 检索结果去重器。
 
-基于残差能量最大化的结果去重器（移植自 booku_memory，仅重命名类）。
+基于残差能量最大化的结果去重：对候选向量做 Gram-Schmidt 正交化，
+贪心选取使残差能量下降最大的条目，去除语义冗余。
 """
 
 from __future__ import annotations
