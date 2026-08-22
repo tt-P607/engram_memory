@@ -8,13 +8,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.app.plugin_system.api import log_api, prompt_api
 from src.app.plugin_system.base import BaseEventHandler
 from src.app.plugin_system.types import EventType
 from src.core.prompt import SystemReminderConsumeType, SystemReminderInsertType
 from src.kernel.event import EventDecision
+
+if TYPE_CHECKING:
+    from src.core.models.sql_alchemy import ChatStreams, PersonInfo
 
 logger = log_api.get_logger("engram_memory.private_chat_person_injector")
 
@@ -55,12 +58,14 @@ class PrivateChatPersonInjector(BaseEventHandler):
             from src.app.plugin_system.api import database_api
             from src.core.models.sql_alchemy import ChatStreams
 
-            row = await database_api.get_by(ChatStreams, stream_id=stream_id)
+            row: ChatStreams | None = await database_api.get_by(
+                ChatStreams, stream_id=stream_id
+            )
             if not row:
                 return None
-            chat_type = str(getattr(row, "chat_type", "") or "").strip()
-            person_id = str(getattr(row, "person_id", "") or "").strip()
-            platform = str(getattr(row, "platform", "") or "").strip()
+            chat_type = str(row.chat_type or "").strip()
+            person_id = str(row.person_id or "").strip()
+            platform = str(row.platform or "").strip()
             if not chat_type or not person_id:
                 return None
             return chat_type, platform, person_id
@@ -94,7 +99,9 @@ class PrivateChatPersonInjector(BaseEventHandler):
             from src.app.plugin_system.api import database_api
             from src.core.models.sql_alchemy import PersonInfo
 
-            person = await database_api.get_by(PersonInfo, person_id=hashed_person_id)
+            person: PersonInfo | None = await database_api.get_by(
+                PersonInfo, person_id=hashed_person_id
+            )
         except Exception as exc:  # noqa: BLE001
             logger.error(f"反查人物失败 {hashed_person_id[:8]}: {exc}")
             self._clear(stream_id)
@@ -103,8 +110,8 @@ class PrivateChatPersonInjector(BaseEventHandler):
             self._clear(stream_id)
             return EventDecision.SUCCESS, params
 
-        sender_id = str(getattr(person, "user_id", "") or "").strip()
-        platform = str(getattr(person, "platform", "") or platform or "").strip()
+        sender_id = str(person.user_id or "").strip()
+        platform = str(person.platform or platform or "").strip()
         if not sender_id:
             self._clear(stream_id)
             return EventDecision.SUCCESS, params
@@ -148,12 +155,14 @@ class PrivateChatPersonInjector(BaseEventHandler):
         return EventDecision.SUCCESS, params
 
     def _format_content(
-        self, person: Any, related_memories: list[dict[str, Any]] | None = None
+        self,
+        person: PersonInfo,
+        related_memories: list[dict[str, Any]] | None = None,
     ) -> str:
         """格式化人物认知文本（含印象 + 相关记忆/关系线索）。"""
         nickname = str(person.nickname or "") or "未知用户"
-        user_id = str(getattr(person, "user_id", "") or "").strip()
-        platform = str(getattr(person, "platform", "") or "").strip()
+        user_id = str(person.user_id or "").strip()
+        platform = str(person.platform or "").strip()
 
         lines: list[str] = ["## 当前对话对象", f"昵称：{nickname}"]
         if user_id:
@@ -196,12 +205,9 @@ class PrivateChatPersonInjector(BaseEventHandler):
         return "\n".join(lines)
 
     @staticmethod
-    def _nickname_history_text(person: Any) -> str:
+    def _nickname_history_text(person: PersonInfo) -> str:
         """生成历史昵称行文本；无历史时返回空字符串。"""
-        try:
-            history = person.nickname_history or ""
-        except AttributeError:
-            return ""
+        history = str(person.nickname_history or "").strip()
         if not history:
             return ""
         import json
@@ -212,7 +218,11 @@ class PrivateChatPersonInjector(BaseEventHandler):
             return ""
         if not isinstance(entries, list):
             return ""
-        names = [str(e.get("name") or "") for e in entries if isinstance(e, dict) and e.get("name")]
+        names = [
+            str(e.get("name") or "")
+            for e in entries
+            if isinstance(e, dict) and e.get("name")
+        ]
         names = list(dict.fromkeys(names))
         if not names:
             return ""
