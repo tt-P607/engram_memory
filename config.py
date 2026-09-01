@@ -6,6 +6,8 @@ from typing import ClassVar
 
 from src.app.plugin_system.base import BaseConfig, Field, SectionBase, config_section
 
+from .vnext.config_sections import VNextConfig
+
 
 class EngramMemoryConfig(BaseConfig):
     """Engram Memory 三层记忆 + 人物连接配置模型。"""
@@ -39,6 +41,13 @@ class EngramMemoryConfig(BaseConfig):
             default="data/engram_memory/chroma",
             description="向量数据库路径（ChromaDB）",
             label="向量库路径",
+            input_type="text",
+            tag="file",
+        )
+        vnext_db_path: str = Field(
+            default="data/engram_memory/vnext.db",
+            description="vNext 规范认知数据库路径（与旧记忆数据库隔离）",
+            label="vNext 数据库路径",
             input_type="text",
             tag="file",
         )
@@ -140,9 +149,6 @@ class EngramMemoryConfig(BaseConfig):
         task_name: str = Field(
             default="tool_use", description="内部子代理模型任务名（chat）"
         )
-        embedding_task_name: str = Field(
-            default="embedding", description="内部 embedding 模型任务名"
-        )
 
     @config_section("persona", title="人物蒸馏", tag="ai")
     class PersonaSection(SectionBase):
@@ -196,3 +202,5 @@ class EngramMemoryConfig(BaseConfig):
     journal: JournalSection = Field(default_factory=JournalSection)
     internal_llm: InternalLLMSection = Field(default_factory=InternalLLMSection)
     persona: PersonaSection = Field(default_factory=PersonaSection)
+
+    vnext: VNextConfig = Field(default_factory=VNextConfig)

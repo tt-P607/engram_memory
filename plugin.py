@@ -1,59 +1,52 @@
-"""engram_memory 插件入口。
+"""Engram Memory vNext 插件入口。
 
-三层记忆（短期/中期/长期）+ 人物连接。负责组件注册、生命周期、提示词
-模板注册、记忆使用引导语注册与后台任务调度（短期总结/清理/人物蒸馏巡检）。
+本入口只装配 vNext Canonical/Derived Runtime，不注册旧的短期、归档、
+EPA、随机闪回或即时人物蒸馏组件。旧模块保留在目录中供历史兼容代码
+读取，但不再属于本插件的生产组件图。
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
+from datetime import datetime, time, timedelta
 from typing import Any
 
-from src.app.plugin_system.api import database_api, log_api, prompt_api
+from src.app.plugin_system.api import log_api, prompt_api
 from src.app.plugin_system.base import BasePlugin, register_plugin
-from src.app.plugin_system.types import PromptTemplate
-from src.core.models.sql_alchemy import PersonInfo
-from src.kernel.concurrency import get_task_manager
 
-from .agent.memory_delete import MemoryDeleteTool
-from .agent.memory_read import MemoryReadTool
-from .agent.memory_search import MemorySearchTool
-from .agent.memory_write import MemoryWriteTool
-from .agent.person_lookup import PersonLookupTool
 from .config import EngramMemoryConfig
-from .event_handler.flashback_injector import FlashbackInjector
-from .event_handler.private_chat_person_injector import PrivateChatPersonInjector
-from .event_handler.short_term_injector import ShortTermInjector
-from .metrics import get_metrics
-from .prompts import MEMORY_GUIDE_REMINDER, PROMPT_TEMPLATES
-from .router.memory_admin_router import MemoryAdminRouter
-from .service.memory_service import MemoryService
-from .service.person_service import PersonService
-from .service.short_term_summarizer import summarize_short_term
-from .store import shared_repo, shared_store
+from .prompts import MEMORY_GUIDE_REMINDER
+from .vnext.framework_bridge import (
+    cancel_managed_task,
+    create_managed_task,
+    create_time_schedule,
+    delete_owned_reminder,
+    get_managed_task,
+    remove_owned_schedule,
+)
+from .vnext.runtime_components import (
+    VNextDoctorRouter,
+    VNextFlashbackEventHandler,
+    VNextMemoryReadTool,
+    VNextMemoryReviseTool,
+    VNextMemorySearchTool,
+    VNextMemoryService,
+    VNextMemoryWriteTool,
+    VNextMessageEventHandler,
+    VNextPersonLookupTool,
+)
+from .vnext.runtime_owner import VNextRuntimeOwner
+
 
 logger = log_api.get_logger("engram_memory.plugin")
 
-# 短期总结默认间隔（分钟）
-_SUMMARIZER_INTERVAL_DEFAULT = 30
-# 短期清理间隔（秒，每小时）
-_CLEANUP_INTERVAL_SECONDS = 3600
-# 调度注册重试次数
 _SCHEDULE_RETRY_MAX = 600
-# 短期层规则晋升的最低激活次数阈值（被主动检索/阅读过≥2次认为有保留价值）
-_PROMOTE_MIN_ACTIVATION = 2
+_ENCODER_SCHEDULE_NAME = "engram_memory_vnext_encoder_flush"
+_SLEEP_SCHEDULE_NAME = "engram_memory_vnext_daily_sleep"
 
 
 def make_config_factory(plugin: Any) -> Any:
-    """构造无参配置回调（供 store 惰性创建）。
-
-    Args:
-        plugin: 插件实例。
-
-    Returns:
-        无参配置回调，返回插件配置实例。
-    """
+    """构造无参配置回调，供仍需读取插件配置的兼容模块使用。"""
 
     def _config_factory() -> EngramMemoryConfig:
         if isinstance(plugin.config, EngramMemoryConfig):
@@ -65,321 +58,173 @@ def make_config_factory(plugin: Any) -> Any:
 
 @register_plugin
 class EngramMemoryPlugin(BasePlugin):
-    """三层记忆（短期/中期/长期）+ 人物连接插件。"""
+    """装配 Engram Memory vNext 的唯一插件 Owner。"""
 
     plugin_name: str = "engram_memory"
-
     configs: list[type] = [EngramMemoryConfig]
     dependent_components: list[str] = []
 
     def __init__(self, config: EngramMemoryConfig | None = None) -> None:
-        """初始化插件。"""
+        """初始化插件及其延迟创建的 Runtime Owner。"""
         super().__init__(config)
+        self.runtime_owner: VNextRuntimeOwner | None = None
         self._schedule_ids: list[str] = []
         self._register_task_id: str | None = None
-        self._job_locks: dict[str, asyncio.Lock] = {}
-
-    # ------------------------------------------------------------------
-    # 组件
-    # ------------------------------------------------------------------
 
     def get_components(self) -> list[type]:
-        """返回插件组件类（配置禁用时返回空列表）。"""
+        """返回 vNext Actor 工具、服务、事件处理器和 Doctor 路由。"""
         if isinstance(self.config, EngramMemoryConfig) and not self.config.plugin.enabled:
             return []
         return [
-            MemorySearchTool,
-            MemoryReadTool,
-            MemoryWriteTool,
-            MemoryDeleteTool,
-            PersonLookupTool,
-            MemoryService,
-            PersonService,
-            ShortTermInjector,
-            FlashbackInjector,
-            PrivateChatPersonInjector,
-            MemoryAdminRouter,
+            VNextMemorySearchTool,
+            VNextMemoryReadTool,
+            VNextMemoryWriteTool,
+            VNextMemoryReviseTool,
+            VNextPersonLookupTool,
+            VNextMemoryService,
+            VNextMessageEventHandler,
+            VNextFlashbackEventHandler,
+            VNextDoctorRouter,
         ]
 
-    # ------------------------------------------------------------------
-    # 生命周期
-    # ------------------------------------------------------------------
-
     async def on_plugin_loaded(self) -> None:
-        """插件加载完成后：注册提示词模板、记忆使用引导语并启动后台任务注册。"""
-        for name, template in PROMPT_TEMPLATES.items():
-            try:
-                prompt_api.register_template(PromptTemplate(name=name, template=template))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"注册提示词模板失败 {name}: {exc}")
-
-        # 记忆使用引导语注册到全局 actor bucket（chatter 以
-        # with_reminder="actor" 创建请求时自动拾取）
+        """初始化 vNext Runtime、注册引导语并安排后台生命周期。"""
+        if isinstance(self.config, EngramMemoryConfig) and not self.config.plugin.enabled:
+            return
+        self.runtime_owner = VNextRuntimeOwner(self)
         try:
-            from src.core.prompt import SystemReminderInsertType
-
+            await self.runtime_owner.initialize()
+        except BaseException:
+            try:
+                await self.runtime_owner.close()
+            except Exception as error:  # noqa: BLE001
+                logger.warning(f"清理初始化失败的 vNext Runtime 失败: {error}")
+            self.runtime_owner = None
+            raise
+        reminder_registered = False
+        try:
             prompt_api.add_system_reminder(
                 bucket="actor",
                 name="engram_memory_guide",
                 content=MEMORY_GUIDE_REMINDER,
-                insert_type=SystemReminderInsertType.FIXED,
+                insert_type=prompt_api.SystemReminderInsertType.FIXED,
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"注册记忆引导语失败: {exc}")
-
-        # 预创建共享 store（含 repo 初始化）
+            reminder_registered = True
+        except Exception as error:  # noqa: BLE001
+            logger.warning(f"注册 vNext 记忆引导语失败: {error}")
+        register_coro = self._register_schedules_when_ready()
         try:
-            _ = shared_store(self, make_config_factory(self))
-            await shared_repo(self, make_config_factory(self)).initialize()
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"初始化共享存储失败: {exc}")
-
-        tm = get_task_manager()
-        task = tm.create_task(
-            self._register_schedules_when_ready(),
-            name="engram_memory_register_schedule",
-            daemon=True,
-        )
-        self._register_task_id = task.task_id
+            task = create_managed_task(
+                register_coro,
+                name="engram_memory_vnext_register_schedule",
+                daemon=True,
+            )
+            self._register_task_id = task.task_id
+        except BaseException:
+            register_coro.close()
+            if reminder_registered:
+                try:
+                    delete_owned_reminder("actor", "engram_memory_guide")
+                except Exception as error:  # noqa: BLE001
+                    logger.warning(f"清理 vNext 记忆引导语失败: {error}")
+            try:
+                await self.runtime_owner.close()
+            except Exception as error:  # noqa: BLE001
+                logger.warning(f"清理 vNext Runtime 失败: {error}")
+            self.runtime_owner = None
+            raise
 
     async def on_plugin_unloaded(self) -> None:
-        """插件卸载前：移除引导语、关闭 repo、移除调度并取消后台注册任务。"""
-        try:
-            from src.core.prompt.system_reminder import get_system_reminder_store
-
-            get_system_reminder_store().delete("actor", "engram_memory_guide")
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(f"移除记忆引导语失败: {exc}")
-
-        try:
-            repo = shared_repo(self, make_config_factory(self))
-            await repo.close()
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(f"关闭仓储失败: {exc}")
-
-        from src.kernel.scheduler import get_unified_scheduler
-
-        scheduler = get_unified_scheduler()
-        for schedule_id in list(self._schedule_ids):
-            try:
-                await scheduler.remove_schedule(schedule_id)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(f"移除调度失败 {schedule_id}: {exc}")
-        self._schedule_ids.clear()
-
+        """移除 vNext 调度、停止 Owner 并清理全局引导语。"""
         if self._register_task_id:
-            try:
-                get_task_manager().cancel_task(self._register_task_id)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(f"取消注册任务失败: {exc}")
+            task_id = self._register_task_id
             self._register_task_id = None
-
-    # ------------------------------------------------------------------
-    # 后台任务注册
-    # ------------------------------------------------------------------
+            try:
+                task = get_managed_task(task_id).task
+                cancel_managed_task(task_id)
+                if task is not None:
+                    await asyncio.gather(task, return_exceptions=True)
+            except Exception as error:  # noqa: BLE001
+                logger.debug(f"停止 vNext 调度注册任务失败: {error}")
+        for schedule_id in tuple(self._schedule_ids):
+            try:
+                await remove_owned_schedule(schedule_id)
+            except Exception as error:  # noqa: BLE001
+                logger.debug(f"移除 vNext 调度 {schedule_id} 失败: {error}")
+        self._schedule_ids.clear()
+        if self.runtime_owner is not None:
+            await self.runtime_owner.close()
+            self.runtime_owner = None
+        try:
+            delete_owned_reminder("actor", "engram_memory_guide")
+        except Exception as error:  # noqa: BLE001
+            logger.debug(f"移除 vNext 记忆引导语失败: {error}")
 
     async def _register_schedules_when_ready(self) -> None:
-        """等待 scheduler 运行后注册短期记忆后台任务。"""
-        from src.kernel.scheduler import TriggerType, get_unified_scheduler
-
-        if not isinstance(self.config, EngramMemoryConfig):
-            logger.warning("engram_memory config 未加载，无法注册 schedule")
+        """等待统一 Scheduler 就绪后注册编码与每日 Sleep 任务。"""
+        if self.runtime_owner is None:
             return
-
-        config = self.config
-        summarizer_interval = (
-            int(config.short_term.summarizer_interval_minutes) * 60
-            if config.short_term.summarizer_interval_minutes
-            else _SUMMARIZER_INTERVAL_DEFAULT * 60
-        )
-
-        # 短期记忆相关任务仅在 short_term.enabled 时注册
-        plans: list[tuple[str, int, Any]] = []
-        if config.short_term.enabled:
-            plans.append(
-                ("engram_memory_short_term_summarizer", summarizer_interval, self._run_summarizer_job)
-            )
-            plans.append(
-                ("engram_memory_short_term_cleanup", _CLEANUP_INTERVAL_SECONDS, self._run_cleanup_job)
-            )
-
-        # 人物蒸馏巡检：persona.enabled 时注册（每小时检查当天活跃人物）
-        if config.persona.enabled:
-            plans.append(
-                ("engram_memory_persona_patrol", _CLEANUP_INTERVAL_SECONDS, self._run_persona_patrol_job)
-            )
-
-        scheduler = get_unified_scheduler()
-        for attempt in range(_SCHEDULE_RETRY_MAX):
+        config = self.runtime_owner.config
+        flush_interval = config.vnext.candidate_encoder.max_wait_minutes * 60
+        daily_time = time.fromisoformat(config.vnext.sleep.daily_time)
+        registered: list[str] = []
+        for _ in range(_SCHEDULE_RETRY_MAX):
             try:
-                registered: list[str] = []
-                for task_name, interval_seconds, callback in plans:
-                    schedule_id = await scheduler.create_schedule(
-                        callback=callback,
-                        trigger_type=TriggerType.TIME,
-                        trigger_config={"interval_seconds": interval_seconds},
+                registered.append(
+                    await create_time_schedule(
+                        callback=self.runtime_owner.flush_all_streams,
+                        trigger_config={"interval_seconds": flush_interval},
                         is_recurring=True,
-                        task_name=task_name,
+                        task_name=_ENCODER_SCHEDULE_NAME,
                         force_overwrite=True,
                     )
-                    registered.append(schedule_id)
-                self._schedule_ids = registered
-                logger.info(f"engram_memory 后台任务已注册: {len(registered)} 个")
-                break
-            except RuntimeError:
-                await asyncio.sleep(0.5)
-                continue
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"注册后台任务失败: {exc}")
-                await asyncio.sleep(2.0)
-        else:
-            logger.warning("等待 scheduler 就绪超时，engram_memory 后台任务未注册")
-
-    # ------------------------------------------------------------------
-    # 任务回调
-    # ------------------------------------------------------------------
-
-    async def _run_summarizer_job(self) -> None:
-        """短期总结任务回调。"""
-        await self._run_job_locked("summarizer", self._do_summarizer)
-
-    async def _run_cleanup_job(self) -> None:
-        """短期清理任务回调。"""
-        await self._run_job_locked("cleanup", self._do_cleanup)
-
-    async def _run_persona_patrol_job(self) -> None:
-        """人物蒸馏巡检任务回调。"""
-        await self._run_job_locked("persona_patrol", self._do_persona_patrol)
-
-    async def _run_job_locked(self, name: str, job) -> None:
-        """带互斥锁执行后台任务，防止重叠运行。"""
-        lock = self._job_locks.setdefault(name, asyncio.Lock())
-        if lock.locked():
-            logger.info(f"engram_memory {name} 任务已在运行，跳过本次")
-            return
-        try:
-            async with lock:
-                await job()
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"engram_memory {name} 任务执行失败: {exc}", exc_info=True)
-
-    # ------------------------------------------------------------------
-    # 具体任务
-    # ------------------------------------------------------------------
-
-    async def _do_summarizer(self) -> None:
-        """执行短期总结。"""
-        if not isinstance(self.config, EngramMemoryConfig):
-            return
-        store = shared_store(self, make_config_factory(self))
-        memory_service = MemoryService(self)
-        await summarize_short_term(self, store, memory_service)
-
-    async def _do_persona_patrol(self) -> None:
-        """每小时巡检：对当天活跃人物执行懒加载蒸馏（未达标自动跳过）。"""
-        if not isinstance(self.config, EngramMemoryConfig):
-            return
-        config = self.config
-        if not config.persona.enabled:
-            return
-        now = time.time()
-        active_cutoff = now - 24 * 3600.0
-
-        # 拉全部人物，过滤当天活跃（last_interaction 距今 ≤ 24h）
-        try:
-            persons = await database_api.get_multi(PersonInfo, skip=0, limit=10000)
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"夜间巡检拉取人物失败: {exc}")
-            return
-
-        store = shared_store(self, make_config_factory(self))
-        distilled = 0
-        skipped = 0
-        for person in persons:
-            last_active = float(person.last_interaction or 0.0)
-            if last_active < active_cutoff:
-                continue
-            platform = str(person.platform or "")
-            user_id = str(person.user_id or "")
-            if not platform or not user_id:
-                continue
-            try:
-                from .service.persona_distiller import ensure_person_impression
-
-                _, reason = await ensure_person_impression(
-                    self, store, config, f"{platform}:{user_id}"
                 )
-                if "蒸馏完成" in reason:
-                    distilled += 1
-                else:
-                    skipped += 1
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(f"巡检蒸馏失败 {platform}:{user_id}: {exc}")
-        get_metrics(self).incr("person_distilled", distilled)
-        get_metrics(self).incr("person_distill_skipped", skipped)
-        logger.info(f"人物蒸馏巡检完成: distilled={distilled} skipped={skipped}")
+                now = datetime.now()
+                first_daily = now.replace(
+                    hour=daily_time.hour,
+                    minute=daily_time.minute,
+                    second=daily_time.second,
+                    microsecond=0,
+                )
+                if first_daily <= now:
+                    first_daily += timedelta(days=1)
+                registered.append(
+                    await create_time_schedule(
+                        callback=self.runtime_owner.run_daily_sleep,
+                        trigger_config={
+                            "trigger_at": first_daily,
+                            "interval_seconds": 86400,
+                        },
+                        is_recurring=True,
+                        task_name=_SLEEP_SCHEDULE_NAME,
+                        force_overwrite=True,
+                    )
+                )
+                self._schedule_ids = registered
+                logger.info("engram_memory vNext 后台任务已注册")
+                return
+            except asyncio.CancelledError:
+                await self._remove_schedules(registered)
+                raise
+            except RuntimeError:
+                await self._remove_schedules(registered)
+                await asyncio.sleep(0.5)
+                registered.clear()
+            except Exception as error:  # noqa: BLE001
+                logger.warning(f"注册 vNext 后台任务失败: {error}")
+                await self._remove_schedules(registered)
+                await asyncio.sleep(2.0)
+                registered.clear()
+        logger.warning("等待 Scheduler 就绪超时，vNext 后台任务未注册")
 
-    async def _do_cleanup(self) -> None:
-        """执行短期层清理：TTL 过期 + 数量上限（超限删最旧）。"""
-        if not isinstance(self.config, EngramMemoryConfig):
-            return
-        from src.kernel.vector_db import get_vector_db_service
-
-        repo = shared_repo(self, make_config_factory(self))
-        now = time.time()
-
-        vector_db = get_vector_db_service(str(self.config.storage.vector_db_path))
-
-        async def _soft_delete(record: Any) -> None:
-            """软删一条短期记忆并同步删向量。"""
-            await repo.soft_delete_record(record.memory_id)
-            await vector_db.delete(
-                collection_name="engram_memory_short_term",
-                ids=[record.memory_id],
-            )
-
-        cleaned = 0
-
-        # 0) 规则晋升：激活达标的短期记忆先晋升 active（copy-then-delete，
-        #    失败不影响后续清理）
-        try:
-            promotable = await repo.list_short_term_promotable(
-                now=now, min_activation=_PROMOTE_MIN_ACTIVATION
-            )
-            memory_service = MemoryService(self)
-            promoted = 0
-            for record in promotable:
-                try:
-                    if await memory_service.promote_memory(record.memory_id, "active"):
-                        promoted += 1
-                except Exception as exc:  # noqa: BLE001
-                    logger.error(f"短期记忆晋升失败 {record.memory_id}: {exc}")
-            if promoted:
-                get_metrics(self).incr("promoted_count", promoted)
-                logger.info(f"短期记忆规则晋升: {promoted} 条 short_term -> active")
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"短期记忆晋升查询失败: {exc}")
-
-        # 1) TTL 过期清理
-        expired = await repo.list_expired_short_term(now=now)
-        for record in expired:
+    @staticmethod
+    async def _remove_schedules(schedule_ids: list[str]) -> None:
+        """清理一次未完成的调度注册，避免重试留下半套任务。"""
+        for schedule_id in tuple(schedule_ids):
             try:
-                await _soft_delete(record)
-                cleaned += 1
-            except Exception as exc:  # noqa: BLE001
-                logger.error(f"清理过期短期记忆失败 {record.memory_id}: {exc}")
+                await remove_owned_schedule(schedule_id)
+            except Exception:  # noqa: BLE001
+                continue
 
-        # 2) 数量上限清理：未过期短期总数超过 max_items 时，删最旧的直到达标
-        max_items = int(self.config.short_term.max_items)
-        unexpired = await repo.list_short_term_all_unexpired(now=now)
-        overflow = len(unexpired) - max_items
-        if overflow > 0:
-            oldest = await repo.list_short_term_oldest(limit=overflow)
-            for record in oldest:
-                try:
-                    await _soft_delete(record)
-                    cleaned += 1
-                except Exception as exc:  # noqa: BLE001
-                    logger.error(f"清理超限短期记忆失败 {record.memory_id}: {exc}")
 
-        logger.info(f"短期清理完成: cleaned={cleaned}")
+__all__ = ["EngramMemoryPlugin", "make_config_factory"]
