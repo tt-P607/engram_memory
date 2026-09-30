@@ -1,10 +1,10 @@
 """Engram Memory vNext 闪回服务。
 
-按 Technical Spec §121-§133 与 Core Design §61-§73 实现回复前自动联想：
+按 Engram vNext 检索契约实现回复前自动联想：
 复用统一 RetrievalService（不建第二套检索体系）、最近多轮拼接查询（不
 调用额外 LLM，INV-022）、延迟预算内未完成本轮放弃（INV-023）、Per-Index
-校准阈值（NULL 即关闭，§126）、先相关性门槛后 Salience 排序、同会话
-按轮数 Cooldown（§129）、最多 0-2 条注入（§128）、只读（§131，
+校准阈值（NULL 即关闭）、先相关性门槛后按检索分排序、同会话
+按轮数 Cooldown、最多 0-2 条注入、只读（
 仅记录 FLASHBACK_EXPOSED 观察事件）。
 """
 
@@ -16,11 +16,19 @@ from datetime import UTC, datetime
 from collections import defaultdict
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 
 from .domain import RetrievalQuery, ScoredMemory
-from .enums import ActorType, MemoryEventType, VectorIndexStatus
-from .models import MemoryEventModel, VectorIndexManifestModel
+from .enums import ActorType, MemoryEventType, MemoryStatus, VectorIndexStatus
+from .models import (
+    EvidenceMessageLinkModel,
+    EvidenceMessageSnapshotModel,
+    MemoryEventModel,
+    MemoryModel,
+    MemoryRevisionModel,
+    RevisionEvidenceModel,
+    VectorIndexManifestModel,
+)
 from .retrieval_service import RetrievalService
 from .schema import VNextSchema
 
@@ -30,7 +38,7 @@ class FlashbackCandidate:
     """一条准备注入 Prompt 的闪回候选。"""
 
     memory_id: str
-    anchor_title: str
+    title: str
     current_brief: str
     matched_cue: str
 
@@ -38,8 +46,9 @@ class FlashbackCandidate:
         """构造注入主模型的自然联想文本（§130）。"""
         return (
             "【自然联想到的过去】\n"
+            "这是一段过去的记忆线索；人物和时间以正文为准，不能直接当作当前发言者的情况。\n"
             f"memory_id: {self.memory_id}\n"
-            f"主题: {self.anchor_title}\n"
+            f"标题: {self.title}\n"
             f"你现在记得: {self.current_brief}\n"
             f"联想到的原因: 当前语境可能与「{self.matched_cue}」有关"
         )
@@ -97,6 +106,93 @@ class FlashbackService:
         if manifest is None:
             return None
         return manifest.flashback_threshold
+
+    async def current_reminder_candidates(
+        self,
+        memory_ids: tuple[str, ...],
+    ) -> dict[str, FlashbackCandidate]:
+        """读取仍可展示的 Memory 当前版本，剔除作废和隐私删除来源。"""
+        normalized_ids = tuple(
+            dict.fromkeys(
+                memory_id.strip()
+                for memory_id in memory_ids
+                if isinstance(memory_id, str) and memory_id.strip()
+            )
+        )
+        candidates: dict[str, FlashbackCandidate] = {}
+        for start in range(0, len(normalized_ids), 500):
+            batch_ids = normalized_ids[start : start + 500]
+            async with self._schema.database.session() as session:
+                current_rows = tuple(
+                    (
+                        await session.execute(
+                            select(
+                                MemoryModel.memory_id,
+                                MemoryRevisionModel.title,
+                                MemoryRevisionModel.content,
+                            )
+                            .join(
+                                MemoryRevisionModel,
+                                MemoryRevisionModel.revision_id
+                                == MemoryModel.current_revision_id,
+                            )
+                            .where(
+                                MemoryModel.memory_id.in_(batch_ids),
+                                MemoryModel.status == MemoryStatus.ACTIVE,
+                            )
+                        )
+                    ).all()
+                )
+                redacted_memory_ids = frozenset(
+                    (
+                        await session.scalars(
+                            select(MemoryModel.memory_id)
+                            .join(
+                                MemoryRevisionModel,
+                                MemoryRevisionModel.memory_id == MemoryModel.memory_id,
+                            )
+                            .join(
+                                RevisionEvidenceModel,
+                                RevisionEvidenceModel.revision_id
+                                == MemoryRevisionModel.revision_id,
+                            )
+                            .join(
+                                EvidenceMessageLinkModel,
+                                EvidenceMessageLinkModel.evidence_id
+                                == RevisionEvidenceModel.evidence_id,
+                            )
+                            .join(
+                                EvidenceMessageSnapshotModel,
+                                and_(
+                                    EvidenceMessageSnapshotModel.stream_id
+                                    == EvidenceMessageLinkModel.stream_id,
+                                    EvidenceMessageSnapshotModel.message_id
+                                    == EvidenceMessageLinkModel.message_id,
+                                ),
+                            )
+                            .where(
+                                MemoryModel.memory_id.in_(batch_ids),
+                                EvidenceMessageSnapshotModel.redacted_at.is_not(None),
+                            )
+                            .distinct()
+                        )
+                    ).all()
+                )
+            for row in current_rows:
+                if row.memory_id in redacted_memory_ids:
+                    continue
+                title = str(row.title or "").strip()
+                content = str(row.content or "").strip()
+                current_brief = (
+                    f"{title}: {content[:160]}" if content else title
+                )
+                candidates[row.memory_id] = FlashbackCandidate(
+                    memory_id=row.memory_id,
+                    title=title,
+                    current_brief=current_brief,
+                    matched_cue=title or "相关经历",
+                )
+        return candidates
 
     async def next_turn_index(self, stream_key: str) -> int:
         """从持久化暴露事件恢复指定会话的下一轮编号。"""
@@ -184,19 +280,22 @@ class FlashbackService:
         turn_index: int | None = None,
         record_exposure: bool = True,
     ) -> tuple[FlashbackCandidate, ...]:
-        """相关性门槛过滤 → Salience 辅助排序 → 限量 → 记暴露事件。"""
-        results = await self._retrieval.search(RetrievalQuery(text=query_text, top_k=6))
+        """相关性门槛过滤 → 按检索分排序 → 限量 → 记暴露事件。"""
+        results = await self._retrieval.search(
+            RetrievalQuery(text=query_text, top_k=12), min_similarity=threshold
+        )
         gated = [
             item
             for item in results
-            if item.rrf_score >= threshold and item.memory_id not in excluded
+            if item.vector_similarity is not None
+            and item.vector_similarity >= threshold
+            and item.memory_id not in excluded
         ]
         if not gated:
             return ()
-        salience_by_memory = await self._salience_map(
-            {item.memory_id for item in gated}
+        gated.sort(
+            key=lambda item: (-float(item.vector_similarity or 0.0), -item.rrf_score, item.memory_id)
         )
-        gated.sort(key=lambda item: (-item.rrf_score, -salience_by_memory.get(item.memory_id, 0), item.memory_id))
         selected = gated[: self._max_memories]
         now = datetime.now(UTC)
         candidates: list[FlashbackCandidate] = []
@@ -204,9 +303,9 @@ class FlashbackService:
             candidates.append(
                 FlashbackCandidate(
                     memory_id=item.memory_id,
-                    anchor_title=item.anchor_title,
+                    title=item.title,
                     current_brief=await self._current_brief(item),
-                    matched_cue="、".join(item.matched_by[:2]) or "相关经历",
+                    matched_cue=item.title or "相关经历",
                 )
             )
         if record_exposure:
@@ -274,40 +373,11 @@ class FlashbackService:
         repository = MemoryRepository(self._schema)
         revision = await repository.get_current_revision(scored.memory_id)
         if revision is None:
-            return scored.anchor_title
+            return scored.title
         content = str(revision.content or "").strip()
         if not content:
             return revision.title
         return f"{revision.title}: {content[:160]}"
-
-    async def _salience_map(self, memory_ids: frozenset[str]) -> dict[str, int]:
-        """读取当前 Assessment 的 Salience 等级映射（仅供门槛后排序）。"""
-        from .models import MemoryAssessmentModel, MemoryModel
-        from .enums import SalienceLevel
-
-        order = {
-            SalienceLevel.LOW: 0,
-            SalienceLevel.MEDIUM: 1,
-            SalienceLevel.HIGH: 2,
-            SalienceLevel.VERY_HIGH: 3,
-        }
-        if not memory_ids:
-            return {}
-        async with self._schema.database.session() as session:
-            rows = tuple(
-                (
-                    await session.execute(
-                        select(MemoryModel.memory_id, MemoryAssessmentModel.salience)
-                        .join(
-                            MemoryAssessmentModel,
-                            MemoryAssessmentModel.assessment_id
-                            == MemoryModel.current_assessment_id,
-                        )
-                        .where(MemoryModel.memory_id.in_(memory_ids))
-                    )
-                ).all()
-            )
-        return {row.memory_id: order[row.salience] for row in rows}
 
     async def _exposed_recently(
         self,

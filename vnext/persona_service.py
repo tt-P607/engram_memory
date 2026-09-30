@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import uuid4
 
-from sqlalchemy import select, update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.app.plugin_system.api import database_api, person_api
+from src.app.plugin_system.api.message_api import PersonInfo
 
 from .domain import PersonaUpdateInput, PersonaUpdateResult, WriteContext
 from .enums import ActorType, MemoryStatus, SleepSessionStatus
@@ -19,12 +22,21 @@ from .models import (
     MemoryRevisionSubjectModel,
     PersonaUpdateLogModel,
     PersonaUpdateMemoryModel,
-    PersonPersonaModel,
     SleepSessionModel,
 )
+from .repository import MemoryRepository
 from .schema import VNextSchema
 
 EMPTY_CONTENT_HASH = sha256(b"").hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class PersonaSnapshot:
+    """核心人物记录中当前印象的只读视图。"""
+
+    person_id: str
+    impression_text: str
+    updated_at: datetime | None
 
 
 def _content_hash(text_value: str) -> str:
@@ -41,13 +53,32 @@ class PersonaService:
             raise ValueError("persona max_length 必须大于 0")
         self._schema = schema
         self._max_length = max_length
+        self._repository = MemoryRepository(schema)
 
-    async def get_persona(self, person_id: str) -> PersonPersonaModel | None:
-        """按人物标识读取当前人物印象。"""
+    async def get_core_person(self, person_id: str) -> PersonInfo | None:
+        """经公开数据库与人物 API 读取核心人物记录。"""
         if not person_id:
             raise ValueError("Persona 查询必须指定 person_id")
-        async with self._schema.database.session() as session:
-            return await session.get(PersonPersonaModel, person_id)
+        if ":" in person_id:
+            platform, user_id = person_id.split(":", 1)
+            if not platform or not user_id:
+                raise ValueError("人物平台身份不完整")
+            return await person_api.get_person(platform, user_id)
+        return await database_api.get_by(PersonInfo, person_id=person_id)
+
+    async def get_persona(self, person_id: str) -> PersonaSnapshot | None:
+        """只从核心 PersonInfo.impression 读取当前人物印象。"""
+        person = await self.get_core_person(person_id)
+        if person is None:
+            return None
+        return PersonaSnapshot(
+            person_id=person.person_id,
+            impression_text=person.impression or "",
+            updated_at=(
+                datetime.fromtimestamp(person.updated_at, UTC)
+                if person.updated_at is not None else None
+            ),
+        )
 
     async def update_persona(
         self,
@@ -57,118 +88,73 @@ class PersonaService:
         """在完成的整理阶段后更新人物印象并写入审计关联。"""
         data.validate()
         self._require_writer(context)
-        final_text = data.impression_text.strip()[: self._max_length]
+        final_text = data.impression_text.strip()
+        if len(final_text) > self._max_length:
+            raise ValueError(f"人物印象超过 {self._max_length} 字，请重新凝练完整正文")
         content_hash = _content_hash(final_text)
+        person = await self.get_core_person(data.person_id)
+        if person is None:
+            raise ValueError("核心人物记录不存在，不能另建人物印象")
+        old_hash = _content_hash(person.impression or "")
+        person_ids = await self._repository.resolve_person_aliases(data.person_id)
         async with self._schema.database.session() as session:
-            sleep_session = await self._validate_sleep_context(session, data, context)
-            memories = await self._load_relevant_memories(session, data)
-            persona = await session.get(PersonPersonaModel, data.person_id)
-            if persona is not None and persona.content_hash == content_hash:
-                return PersonaUpdateResult(
-                    person_id=data.person_id,
-                    changed=False,
-                    update_id=None,
-                    content_hash=persona.content_hash,
-                )
-            now = datetime.now(UTC)
-            old_hash = persona.content_hash if persona is not None else EMPTY_CONTENT_HASH
-            inserted = False
-            if persona is None:
-                insert_result = await session.execute(
-                    sqlite_insert(PersonPersonaModel)
-                    .values(
-                        person_id=data.person_id,
-                        impression_text=final_text,
-                        created_at=now,
-                        updated_at=now,
-                        last_sleep_session_id=(
-                            data.sleep_session_id if sleep_session is not None else None
-                        ),
-                        content_hash=content_hash,
-                    )
-                    .prefix_with("OR IGNORE")
-                )
-                if insert_result.rowcount == 1:
-                    inserted = True
-                    persona = await session.get(PersonPersonaModel, data.person_id)
-                    if persona is None:  # pragma: no cover - same transaction
-                        raise ValueError("Persona 创建失败")
-                else:
-                    persona = await session.get(PersonPersonaModel, data.person_id)
-                    if persona is None:  # pragma: no cover - same transaction
-                        raise ValueError("Persona 并发创建失败")
-                    old_hash = persona.content_hash
-                    if persona.content_hash == content_hash:
-                        return PersonaUpdateResult(
-                            person_id=data.person_id,
-                            changed=False,
-                            update_id=None,
-                            content_hash=content_hash,
-                        )
-            if not inserted:
-                if persona is None:  # pragma: no cover - guarded above
-                    raise ValueError("Persona 不存在")
-                result = await session.execute(
-                    update(PersonPersonaModel)
-                    .where(
-                        PersonPersonaModel.person_id == data.person_id,
-                        PersonPersonaModel.content_hash == persona.content_hash,
-                        PersonPersonaModel.updated_at == persona.updated_at,
-                    )
-                    .values(
-                        impression_text=final_text,
-                        updated_at=now,
-                        last_sleep_session_id=(
-                            data.sleep_session_id
-                            if sleep_session is not None
-                            else persona.last_sleep_session_id
-                        ),
-                        content_hash=content_hash,
-                    )
-                    .execution_options(synchronize_session=False)
-                )
-                if result.rowcount != 1:
-                    current = await session.get(PersonPersonaModel, data.person_id)
-                    if current is not None and current.content_hash == content_hash:
-                        return PersonaUpdateResult(
-                            person_id=data.person_id,
-                            changed=False,
-                            update_id=None,
-                            content_hash=current.content_hash,
-                        )
-                    raise ValueError("Persona 在更新前已被并发修改")
-                persona.impression_text = final_text
-                persona.updated_at = now
-                persona.last_sleep_session_id = (
-                    data.sleep_session_id if sleep_session is not None else persona.last_sleep_session_id
-                )
-                persona.content_hash = content_hash
-            update_id = str(uuid4())
-            session.add(
-                PersonaUpdateLogModel(
-                    update_id=update_id,
-                    person_id=data.person_id,
-                    sleep_session_id=data.sleep_session_id,
-                    old_content_hash=old_hash,
-                    new_content_hash=content_hash,
-                    reason=data.reason,
-                    created_at=now,
-                )
+            await self._validate_sleep_context(session, data, context)
+            memories = await self._load_relevant_memories(session, data, person_ids)
+            if old_hash != content_hash:
+                if not await person_api.update_user_impression(
+                    person.platform, person.user_id, final_text,
+                ):
+                    raise ValueError("核心人物印象更新失败")
+                reread = await self.get_persona(person.person_id)
+                if reread is None or reread.impression_text != final_text:
+                    raise ValueError("核心人物印象回读与写入不一致")
+            update_id = self._append_review_log(
+                session, data, person.person_id, memories, old_hash, content_hash,
             )
-            await session.flush()
-            for memory in memories:
-                session.add(
-                    PersonaUpdateMemoryModel(
-                        update_id=update_id,
-                        memory_id=memory.memory_id,
-                    )
-                )
         return PersonaUpdateResult(
-            person_id=data.person_id,
-            changed=True,
+            person_id=person.person_id,
+            changed=old_hash != content_hash,
             update_id=update_id,
             content_hash=content_hash,
         )
+
+    async def record_unchanged_review(
+        self, data: PersonaUpdateInput, context: WriteContext,
+    ) -> None:
+        """记录保持现有核心印象的审查，避免重复调查同一批正式记忆。"""
+        self._require_writer(context)
+        if not data.memory_ids or not data.reason.strip():
+            raise ValueError("保持印象也须记录正式记忆依据和理由")
+        person = await self.get_core_person(data.person_id)
+        if person is None:
+            raise ValueError("核心人物记录不存在")
+        person_ids = await self._repository.resolve_person_aliases(data.person_id)
+        current_hash = _content_hash(person.impression or "")
+        async with self._schema.database.session() as session:
+            await self._validate_sleep_context(session, data, context)
+            memories = await self._load_relevant_memories(session, data, person_ids)
+            self._append_review_log(
+                session, data, person.person_id, memories, current_hash, current_hash,
+            )
+
+    @staticmethod
+    def _append_review_log(
+        session: AsyncSession, data: PersonaUpdateInput, person_id: str,
+        memories: tuple[MemoryModel, ...], old_hash: str, new_hash: str,
+    ) -> str:
+        """追加审查摘要及其正式记忆关联，不保存另一份人物印象正文。"""
+        update_id = str(uuid4())
+        session.add(PersonaUpdateLogModel(
+            update_id=update_id, person_id=person_id,
+            sleep_session_id=data.sleep_session_id,
+            old_content_hash=old_hash, new_content_hash=new_hash,
+            reason=data.reason, created_at=datetime.now(UTC),
+        ))
+        for memory in memories:
+            session.add(PersonaUpdateMemoryModel(
+                update_id=update_id, memory_id=memory.memory_id,
+            ))
+        return update_id
 
     @staticmethod
     def _require_writer(context: WriteContext) -> None:
@@ -206,6 +192,7 @@ class PersonaService:
         self,
         session: AsyncSession,
         data: PersonaUpdateInput,
+        person_ids: tuple[str, ...],
     ) -> tuple[MemoryModel, ...]:
         """读取并校验人物相关正式记忆。"""
         memories = tuple(
@@ -230,12 +217,12 @@ class PersonaService:
                     await session.scalars(
                         select(MemoryRevisionParticipantModel.person_id).where(
                             MemoryRevisionParticipantModel.revision_id == revision.revision_id,
-                            MemoryRevisionParticipantModel.person_id == data.person_id,
+                            MemoryRevisionParticipantModel.person_id.in_(person_ids),
                         )
                     )
                 ).all()
             )
-            subject_matches = subject is not None and subject.person_id == data.person_id
+            subject_matches = subject is not None and subject.person_id in person_ids
             if not subject_matches and not participant_person_ids:
                 raise ValueError("Persona 参考 Memory 与目标人物无关")
         return memories

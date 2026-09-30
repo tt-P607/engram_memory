@@ -11,10 +11,11 @@ import asyncio
 from datetime import datetime, time, timedelta
 from typing import Any
 
-from src.app.plugin_system.api import log_api, prompt_api
+from src.app.plugin_system.api import log_api, prompt_api, router_api
 from src.app.plugin_system.base import BasePlugin, register_plugin
 
 from .config import EngramMemoryConfig
+from .router.memory_admin_router import VNextMemoryAdminRouter
 from .prompts import MEMORY_GUIDE_REMINDER
 from .vnext.framework_bridge import (
     cancel_managed_task,
@@ -66,10 +67,16 @@ class EngramMemoryPlugin(BasePlugin):
 
     def __init__(self, config: EngramMemoryConfig | None = None) -> None:
         """初始化插件及其延迟创建的 Runtime Owner。"""
+        if config is not None and not isinstance(config, EngramMemoryConfig):
+            # 热重载后的配置缓存可能仍属于旧模块中的同名配置类。
+            config = EngramMemoryConfig.model_validate(config.model_dump())
         super().__init__(config)
         self.runtime_owner: VNextRuntimeOwner | None = None
         self._schedule_ids: list[str] = []
         self._register_task_id: str | None = None
+        self._daily_schedule_id: str | None = None
+        self._unloading = False
+        self._flashback_reminder_streams: dict[str, set[str]] = {}
 
     def get_components(self) -> list[type]:
         """返回 vNext Actor 工具、服务、事件处理器和 Doctor 路由。"""
@@ -85,12 +92,14 @@ class EngramMemoryPlugin(BasePlugin):
             VNextMessageEventHandler,
             VNextFlashbackEventHandler,
             VNextDoctorRouter,
+            VNextMemoryAdminRouter,
         ]
 
     async def on_plugin_loaded(self) -> None:
         """初始化 vNext Runtime、注册引导语并安排后台生命周期。"""
         if isinstance(self.config, EngramMemoryConfig) and not self.config.plugin.enabled:
             return
+        self._unloading = False
         self.runtime_owner = VNextRuntimeOwner(self)
         try:
             await self.runtime_owner.initialize()
@@ -101,13 +110,21 @@ class EngramMemoryPlugin(BasePlugin):
                 logger.warning(f"清理初始化失败的 vNext Runtime 失败: {error}")
             self.runtime_owner = None
             raise
+        for component in (VNextDoctorRouter, VNextMemoryAdminRouter):
+            signature = f"{self.plugin_name}:router:{component.name}"
+            if router_api.get_mounted_router(signature) is not None:
+                await router_api.reload_router(signature, self)
         reminder_registered = False
         try:
             prompt_api.add_system_reminder(
                 bucket="actor",
                 name="engram_memory_guide",
                 content=MEMORY_GUIDE_REMINDER,
-                insert_type=prompt_api.SystemReminderInsertType.FIXED,
+                insert_type=(
+                    prompt_api.SystemReminderInsertType.DYNAMIC
+                    if self.runtime_owner.config.vnext.prompt_injection.reminder_at_end
+                    else prompt_api.SystemReminderInsertType.FIXED
+                ),
             )
             reminder_registered = True
         except Exception as error:  # noqa: BLE001
@@ -136,6 +153,8 @@ class EngramMemoryPlugin(BasePlugin):
 
     async def on_plugin_unloaded(self) -> None:
         """移除 vNext 调度、停止 Owner 并清理全局引导语。"""
+        self._unloading = True
+        self._daily_schedule_id = None
         if self._register_task_id:
             task_id = self._register_task_id
             self._register_task_id = None
@@ -152,6 +171,13 @@ class EngramMemoryPlugin(BasePlugin):
             except Exception as error:  # noqa: BLE001
                 logger.debug(f"移除 vNext 调度 {schedule_id} 失败: {error}")
         self._schedule_ids.clear()
+        for stream_id, names in self._flashback_reminder_streams.items():
+            for name in names:
+                try:
+                    prompt_api.delete_stream_reminder(stream_id, "actor", name)
+                except Exception:  # noqa: BLE001
+                    logger.debug("移除流闪回 reminder 失败")
+        self._flashback_reminder_streams.clear()
         if self.runtime_owner is not None:
             await self.runtime_owner.close()
             self.runtime_owner = None
@@ -166,7 +192,6 @@ class EngramMemoryPlugin(BasePlugin):
             return
         config = self.runtime_owner.config
         flush_interval = config.vnext.candidate_encoder.max_wait_minutes * 60
-        daily_time = time.fromisoformat(config.vnext.sleep.daily_time)
         registered: list[str] = []
         for _ in range(_SCHEDULE_RETRY_MAX):
             try:
@@ -179,27 +204,7 @@ class EngramMemoryPlugin(BasePlugin):
                         force_overwrite=True,
                     )
                 )
-                now = datetime.now()
-                first_daily = now.replace(
-                    hour=daily_time.hour,
-                    minute=daily_time.minute,
-                    second=daily_time.second,
-                    microsecond=0,
-                )
-                if first_daily <= now:
-                    first_daily += timedelta(days=1)
-                registered.append(
-                    await create_time_schedule(
-                        callback=self.runtime_owner.run_daily_sleep,
-                        trigger_config={
-                            "trigger_at": first_daily,
-                            "interval_seconds": 86400,
-                        },
-                        is_recurring=True,
-                        task_name=_SLEEP_SCHEDULE_NAME,
-                        force_overwrite=True,
-                    )
-                )
+                registered.append(await self._schedule_daily_sleep())
                 self._schedule_ids = registered
                 logger.info("engram_memory vNext 后台任务已注册")
                 return
@@ -216,6 +221,49 @@ class EngramMemoryPlugin(BasePlugin):
                 await asyncio.sleep(2.0)
                 registered.clear()
         logger.warning("等待 Scheduler 就绪超时，vNext 后台任务未注册")
+
+    async def _schedule_daily_sleep(self) -> str:
+        """按本地日历安排下一次每日整理，避免周期触发忽略指定时刻。"""
+        if self.runtime_owner is None:
+            raise RuntimeError("vNext Runtime 尚未初始化")
+        daily_time = time.fromisoformat(self.runtime_owner.config.vnext.sleep.daily_time)
+        now = datetime.now()
+        target = now.replace(
+            hour=daily_time.hour, minute=daily_time.minute,
+            second=daily_time.second, microsecond=0,
+        )
+        if target <= now:
+            target += timedelta(days=1)
+        schedule_id = await create_time_schedule(
+            callback=self._run_daily_sleep_and_reschedule,
+            trigger_config={"trigger_at": target},
+            is_recurring=False,
+            task_name=f"{_SLEEP_SCHEDULE_NAME}_{target.strftime('%Y%m%d_%H%M%S')}",
+            force_overwrite=True,
+        )
+        self._daily_schedule_id = schedule_id
+        return schedule_id
+
+    async def _run_daily_sleep_and_reschedule(self) -> None:
+        """执行每日整理；成功或失败后均安排下一个本地日期。"""
+        owner = self.runtime_owner
+        if owner is None or self._unloading:
+            return
+        previous_id = self._daily_schedule_id
+        try:
+            await owner.run_daily_sleep()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            logger.warning(f"vNext 每日整理失败: {error}")
+        finally:
+            if self.runtime_owner is owner and not self._unloading:
+                if previous_id in self._schedule_ids:
+                    self._schedule_ids.remove(previous_id)
+                try:
+                    self._schedule_ids.append(await self._schedule_daily_sleep())
+                except Exception as error:  # noqa: BLE001
+                    logger.warning(f"安排 vNext 下一次每日整理失败: {error}")
 
     @staticmethod
     async def _remove_schedules(schedule_ids: list[str]) -> None:
