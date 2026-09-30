@@ -1,562 +1,553 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Engram Memory Console</title>
-<style>
-:root {
-  color-scheme: dark;
-  --bg: #0e1116;
-  --panel: rgba(22, 27, 36, 0.86);
-  --panel-strong: #161b24;
-  --ink: #e8ecf1;
-  --muted: #8b93a1;
-  --line: rgba(94, 130, 160, 0.16);
-  --accent: #56c8b4;
-  --accent-deep: #2e8f7e;
-  --accent-soft: rgba(86, 200, 180, 0.12);
-  --warn: #e0a14b;
-  --danger: #ef6a5f;
-  --info: #6fa8dc;
-  --shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
-  --radius-xl: 24px;
-  --radius-lg: 16px;
-  --radius-md: 12px;
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0; min-height: 100vh;
-  font-family: "Avenir Next", "Segoe UI Variable", "PingFang SC", "Noto Sans SC", sans-serif;
-  color: var(--ink);
-  background:
-    radial-gradient(circle at top left, rgba(86, 200, 180, 0.10), transparent 30%),
-    radial-gradient(circle at right 15% bottom 20%, rgba(47, 92, 161, 0.12), transparent 25%),
-    linear-gradient(155deg, #0c0f14 0%, #11161e 50%, #0e1218 100%);
-}
-body::before {
-  content: ""; position: fixed; inset: 0; pointer-events: none;
-  background-image:
-    linear-gradient(rgba(86, 200, 180, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(86, 200, 180, 0.025) 1px, transparent 1px);
-  background-size: 40px 40px;
-  mask-image: radial-gradient(circle at 50% 20%, black 30%, transparent 90%);
-}
-.shell { position: relative; display: grid; grid-template-columns: 260px minmax(0,1fr); gap: 16px; padding: 20px; }
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-xl); backdrop-filter: blur(18px); box-shadow: var(--shadow); }
-.sidebar { padding: 20px; position: sticky; top: 20px; height: calc(100vh - 40px); display: flex; flex-direction: column; }
-.brand { padding-bottom: 16px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
-.eyebrow { margin: 0 0 8px; text-transform: uppercase; font-size: 11px; letter-spacing: 0.22em; color: var(--accent); font-weight: 700; }
-h1 { margin: 0; font-size: 26px; line-height: 1.1; letter-spacing: -0.03em; }
-.subtitle { margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
-.nav { display: flex; flex-direction: column; gap: 6px; flex: 1; }
-.nav-btn {
-  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
-  padding: 11px 14px; border-radius: var(--radius-md); border: 1px solid transparent;
-  background: transparent; color: var(--muted); font-size: 14px; font-weight: 600; cursor: pointer;
-  transition: all 0.18s ease;
-}
-.nav-btn:hover { background: rgba(86,200,180,0.07); color: var(--ink); }
-.nav-btn.active { background: var(--accent-soft); color: var(--accent); border-color: rgba(86,200,180,0.3); }
-.nav-btn .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: 0.6; }
-.sidebar-foot { padding-top: 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.6; }
-.main { padding: 20px; min-height: calc(100vh - 40px); }
-.page { display: none; }
-.page.active { display: block; }
-.page-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 18px; }
-.page-head h2 { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
-.page-head .hint { color: var(--muted); font-size: 13px; margin-top: 6px; }
-.toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
-.toolbar input, .toolbar select {
-  background: var(--panel-strong); border: 1px solid var(--line); color: var(--ink);
-  border-radius: var(--radius-md); padding: 9px 12px; font-size: 13px; outline: none;
-}
-.toolbar input:focus, .toolbar select:focus { border-color: var(--accent); }
-.btn {
-  background: var(--accent); color: #07110e; border: none; border-radius: var(--radius-md);
-  padding: 9px 16px; font-size: 13px; font-weight: 700; cursor: pointer; transition: filter 0.15s;
-}
-.btn:hover { filter: brightness(1.12); }
-.btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
-.btn.ghost:hover { color: var(--ink); border-color: var(--accent); }
-.btn.danger { background: transparent; color: var(--danger); border: 1px solid rgba(239,106,95,0.4); }
-.btn.danger:hover { background: rgba(239,106,95,0.12); }
-.btn.small { padding: 6px 12px; font-size: 12px; }
-.chips { display: flex; gap: 8px; flex-wrap: wrap; }
-.chip { padding: 8px 14px; border-radius: 999px; font-size: 12px; font-weight: 700; cursor: pointer; border: 1px solid var(--line); color: var(--muted); background: transparent; }
-.chip.active { background: var(--accent-soft); color: var(--accent); border-color: rgba(86,200,180,0.4); }
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 12px; margin-bottom: 20px; }
-.stat-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 16px; }
-.stat-card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
-.stat-card .value { font-size: 30px; font-weight: 800; margin-top: 6px; letter-spacing: -0.03em; }
-.stat-card .value.accent { color: var(--accent); }
-.stat-card .value.warn { color: var(--warn); }
-.stat-card .value.info { color: var(--info); }
-.table-wrap { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); font-size: 13px; vertical-align: top; }
-th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; white-space: nowrap; }
-tr:hover td { background: rgba(86,200,180,0.03); }
-td .tag { display: inline-block; background: var(--accent-soft); color: var(--accent); border-radius: 6px; padding: 2px 8px; font-size: 11px; margin: 2px 2px 2px 0; }
-.layer-badge { display: inline-block; border-radius: 999px; padding: 3px 10px; font-size: 11px; font-weight: 700; }
-.layer-short_term { background: rgba(224,161,75,0.16); color: var(--warn); }
-.layer-active { background: rgba(86,200,180,0.16); color: var(--accent); }
-.layer-archived { background: rgba(111,168,220,0.16); color: var(--info); }
-.row-actions { display: flex; gap: 6px; }
-.empty { color: var(--muted); text-align: center; padding: 40px 0; font-size: 14px; }
-.detail-grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
-.field { margin-bottom: 12px; }
-.field label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; font-weight: 600; }
-.field input, .field textarea, .field select {
-  width: 100%; background: var(--panel-strong); border: 1px solid var(--line); color: var(--ink);
-  border-radius: var(--radius-md); padding: 10px 12px; font-size: 13px; outline: none; font-family: inherit;
-}
-.field textarea { min-height: 120px; resize: vertical; line-height: 1.6; }
-.field input:focus, .field textarea:focus, .field select:focus { border-color: var(--accent); }
-.field .multi-hint { color: var(--muted); font-size: 11px; margin-top: 4px; }
-.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 100; }
-.modal-backdrop.show { display: flex; }
-.modal { width: min(680px, 92vw); max-height: 88vh; overflow-y: auto; background: var(--panel-strong); border: 1px solid var(--line); border-radius: var(--radius-xl); padding: 24px; box-shadow: var(--shadow); }
-.modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-.modal-head h3 { margin: 0; font-size: 18px; }
-.modal-close { background: none; border: none; color: var(--muted); font-size: 22px; cursor: pointer; line-height: 1; }
-.toast {
-  position: fixed; bottom: 24px; right: 24px; padding: 12px 20px; border-radius: var(--radius-md);
-  background: var(--panel-strong); border: 1px solid var(--line); color: var(--ink); font-size: 13px;
-  box-shadow: var(--shadow); opacity: 0; transform: translateY(12px); transition: all 0.25s ease; z-index: 200;
-}
-.toast.show { opacity: 1; transform: translateY(0); }
-.toast.ok { border-color: rgba(86,200,180,0.5); }
-.toast.err { border-color: rgba(239,106,95,0.5); }
-.meta-line { color: var(--muted); font-size: 12px; margin-top: 6px; line-height: 1.7; }
-.person-row { cursor: pointer; }
-.mono { font-family: "Cascadia Code", "SF Mono", Consolas, monospace; font-size: 12px; }
-.stat-grid.second .stat-card { background: var(--panel-strong); }
-.stat-card .value.warn { color: var(--warn); }
-.tree { display: flex; flex-direction: column; gap: 10px; }
-.tree-item { padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-strong); }
-.tree-dates { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.tree-dates .btn { padding: 4px 10px; font-size: 12px; }
-@media (max-width: 900px) { .shell { grid-template-columns: 1fr; } .sidebar { position: static; height: auto; } }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Engram · 记忆档案</title>
+  <style>
+    :root {
+      color-scheme: light; --ink:#24353b; --muted:#748187; --navy:#192c35;
+      --navy2:#2a424a; --paper:#f4f1e9; --sheet:#fffdf8; --line:#dfdbd1;
+      --brass:#bc925d; --green:#547965; --red:#a3584e;
+      --serif:"Iowan Old Style","Palatino Linotype","Book Antiqua",Georgia,serif;
+      --sans:"Segoe UI","Microsoft YaHei UI","Noto Sans CJK SC",sans-serif;
+      --mono:"Cascadia Code","SFMono-Regular",Consolas,monospace;
+    }
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;color:var(--ink);font:14px/1.6 var(--sans);
+      background:radial-gradient(ellipse at 86% 0,rgba(188,146,93,.11),transparent 33rem),
+      repeating-linear-gradient(0deg,rgba(50,63,64,.018) 0,rgba(50,63,64,.018) 1px,transparent 1px,transparent 5px),var(--paper)}
+    button,input,select{font:inherit} button{cursor:pointer}
+    .layout{min-height:100vh;display:grid;grid-template-columns:235px minmax(0,1fr)}
+    aside{position:relative;display:flex;flex-direction:column;padding:28px 17px 20px;overflow:hidden;color:#edf0eb;background:linear-gradient(155deg,rgba(255,255,255,.04),transparent 45%),var(--navy)}
+    aside:after{position:absolute;right:-115px;bottom:42px;width:260px;height:260px;border:1px solid rgba(188,146,93,.17);border-radius:50%;box-shadow:0 0 0 25px rgba(188,146,93,.025),0 0 0 50px rgba(188,146,93,.02);content:"";pointer-events:none}
+    .brand{display:flex;align-items:center;gap:12px;padding:0 7px 31px}.seal{display:grid;width:38px;height:38px;place-items:center;border:1px solid #c9a878;color:#e1bf8b;font:19px var(--serif);transform:rotate(-4deg)}
+    .brand strong{display:block;font:18px/1.2 var(--serif);letter-spacing:.03em}.brand small{color:#aab6b5;font-size:9px;letter-spacing:.2em;text-transform:uppercase}
+    .rail-label{margin:0 10px 9px;color:#829396;font-size:10px;letter-spacing:.16em}
+    nav{position:relative;z-index:1;display:grid;gap:5px}
+    .nav{width:100%;padding:10px 12px;border:1px solid transparent;border-radius:6px;color:#b9c3c1;background:transparent;text-align:left;transition:.15s}
+    .nav:hover{color:#fff;background:#ffffff0c}.nav[aria-current=page]{border-color:#dbb88233;color:#fff8ec;background:linear-gradient(90deg,#bc925d2b,#bc925d0a)}
+    .glyph{display:inline-block;width:24px;color:#d1ad77;font:17px var(--serif)}
+    .rail-foot{position:relative;z-index:1;margin-top:auto;padding:16px 9px 0;border-top:1px solid #ffffff24;color:#92a09f;font-size:11px}
+    .rail-foot strong{display:block;color:#d6dcd6;font-weight:500}
+    main{min-width:0;padding:0 34px 50px}.topline{display:flex;min-height:70px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}
+    .crumb{color:var(--muted);font-size:11px;letter-spacing:.08em}.top-actions{display:flex;align-items:center;gap:14px}
+    .local{color:#718278;font-size:10px;letter-spacing:.12em}.local:before{display:inline-block;width:6px;height:6px;margin-right:7px;border-radius:50%;background:#6f967c;content:""}
+    .refresh,.soft{min-height:34px;padding:6px 10px;border:1px solid var(--line);border-radius:5px;color:var(--ink);background:#fffdf8}
+    .refresh{width:35px;padding:0;font-size:17px}.refresh:hover,.soft:hover{border-color:#b9a47f}
+    #view{max-width:1400px;margin:0 auto;padding-top:27px}.heading{display:flex;align-items:end;justify-content:space-between;gap:18px;margin-bottom:22px}
+    .eyebrow{margin:0 0 6px;color:#9c7d53;font-size:10px;letter-spacing:.18em;text-transform:uppercase}
+    h1,h2,h3,p{margin-top:0}h1{margin-bottom:4px;font:34px/1.15 var(--serif);letter-spacing:-.02em}h2{margin-bottom:11px;font:22px/1.25 var(--serif)}h3{margin-bottom:7px;font:17px/1.3 var(--serif)}
+    .sub{max-width:700px;margin:0;color:var(--muted);font-size:12px}.overview{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px}
+    .stat{position:relative;min-height:118px;padding:17px;border:1px solid var(--line);border-radius:7px;background:linear-gradient(145deg,#fffdf8,#f9f6ee);overflow:hidden}
+    .stat:after{position:absolute;right:-25px;bottom:-55px;width:105px;height:105px;border:1px solid #bc925d38;border-radius:50%;content:""}
+    .stat label,.stat small{display:block;color:var(--muted);font-size:11px}.stat strong{display:block;margin:7px 0;color:var(--navy);font:32px/1 var(--serif)}
+    .band{display:grid;grid-template-columns:1fr auto;gap:20px;align-items:center;margin-top:14px;padding:17px 20px;border-radius:7px;color:#eef0eb;background:var(--navy2)}
+    .band h2{margin:0 0 3px;color:#f8f4e9;font-size:18px}.band p{margin:0;color:#c2ccca;font-size:11px}.band-side{display:flex;gap:22px}
+    .band-side small{display:block;color:#aab9b7;font-size:9px;letter-spacing:.1em}.band-side strong{display:block;margin-top:3px;color:#f0d6ad;font:15px var(--serif)}
+    .split{display:grid;grid-template-columns:minmax(260px,.82fr) minmax(0,1.4fr);gap:14px;align-items:start}
+    .panel{min-width:0;padding:17px;border:1px solid var(--line);border-radius:7px;background:#fffdf8df}
+    .panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.panel-head h2{margin:0;font-size:19px}
+    .filters{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}.filters input,.filters select{min-width:0;height:36px;padding:6px 9px;border:1px solid var(--line);border-radius:5px;outline:none;background:#fffdf8}
+    .filters input{flex:1 1 130px}.filters input:focus,.filters select:focus{border-color:#aa8c62;box-shadow:0 0 0 3px #bc925d21}
+    .primary{height:36px;padding:5px 13px;border:1px solid var(--navy);border-radius:5px;color:white;background:var(--navy)}.primary:hover{background:#2b4149}
+    .list{display:grid;gap:7px}.record{width:100%;padding:11px 12px;border:1px solid #e5e1d7;border-radius:5px;color:var(--ink);background:#ffffff91;text-align:left;transition:.14s}
+    .record:hover{border-color:#bba27c;background:#fffefa;transform:translateY(-1px)}.record[aria-pressed=true]{border-color:#b38d5a;background:#fbf6eb;box-shadow:inset 3px 0 #b38d5a}
+    .record-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}.record-title{font-weight:650;overflow-wrap:anywhere}.meta{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:5px;color:#899294;font-size:10px}
+    .preview{display:-webkit-box;margin:6px 0 0;overflow:hidden;color:#69777a;font-size:11px;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+    .badge{display:inline-flex;flex:none;align-items:center;min-height:20px;padding:1px 7px;border:1px solid #e3d7c5;border-radius:99px;color:#806847;background:#f4ecdf;font:9px var(--mono);white-space:nowrap}
+    .good{border-color:#d6e1d8;color:#547965;background:#edf4ee}.bad{border-color:#ead5d0;color:#a3584e;background:#faf0ee}.quiet{border-color:#dfe1dc;color:#748080;background:#f1f2ed}
+    .detail{min-height:270px;padding:20px}.detail-head{padding-bottom:15px;border-bottom:1px solid var(--line)}.detail-head h2{margin:6px 0;overflow-wrap:anywhere}
+    .detail-section{margin-top:17px}.detail-section h3{display:flex;align-items:center;gap:8px;color:#526369;font:10px var(--sans);font-weight:700;letter-spacing:.13em;text-transform:uppercase}
+    .detail-section h3:after{flex:1;height:1px;background:#e6e2d8;content:""}.body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;color:#36474c;font-size:13px;line-height:1.8}
+    .source,.revision,.audit,.persona{margin-top:8px;padding:12px;border:1px solid #e6e2d8;border-radius:5px;background:#fffefa}
+    .source-head{display:flex;flex-wrap:wrap;align-items:center;gap:5px 9px;color:#6c787a;font-size:10px}.source-note{margin:7px 0 0;color:#4f6064;font-size:11px}
+    .snapshot{margin-top:9px;padding:9px 11px;border-left:2px solid #c19a67;background:#f7f4ed}.snapshot blockquote{margin:5px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.7}
+    .code{margin:7px 0 0;padding:10px;overflow:auto;border-radius:4px;color:#3c4c50;background:#f2f0e9;font:10px/1.65 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+    .sleep-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0 4px;padding:9px 11px;border:1px solid var(--line);border-radius:6px;background:#faf8f1}
+    .sleep-toolbar-label{color:#69777a;font-size:11px}.sleep-mode{display:flex;gap:3px;padding:3px;border:1px solid #e3dfd5;border-radius:6px;background:#f0eee7}
+    .sleep-mode button{min-height:30px;padding:4px 11px;border:1px solid transparent;border-radius:4px;color:#687578;background:transparent;font-size:11px}
+    .sleep-mode button:hover{color:var(--navy);background:#fffdf8}.sleep-mode button[aria-pressed=true]{border-color:#d8c6aa;color:#6c5232;background:#fffdf8;box-shadow:0 1px 2px #24353b12}
+    .sleep-mode button:focus-visible,.memory-open:focus-visible,.technical summary:focus-visible{outline:2px solid #a8814f;outline-offset:2px}
+    .sleep-notice{margin:10px 0;padding:10px 12px;border:1px solid #ead9bc;border-left:3px solid var(--brass);border-radius:4px;color:#705a39;background:#fbf5e9;font-size:11px}
+    .sleep-timeline{position:relative;display:grid;gap:9px;margin:8px 0 0;padding-left:19px}
+    .sleep-timeline:before{position:absolute;top:12px;bottom:12px;left:5px;width:1px;background:#ded8ca;content:""}
+    .sleep-entry{position:relative;min-width:0;padding:12px;border:1px solid #e6e2d8;border-radius:5px;background:#fffefa}
+    .sleep-entry:before{position:absolute;top:17px;left:-19px;width:9px;height:9px;border:2px solid #fffdf8;border-radius:50%;background:#b38d5a;box-shadow:0 0 0 1px #b38d5a;content:""}
+    .sleep-entry.warn:before{background:#a3584e;box-shadow:0 0 0 1px #a3584e}.sleep-entry.done:before{background:#547965;box-shadow:0 0 0 1px #547965}
+    .sleep-entry-head{display:flex;flex-wrap:wrap;align-items:center;gap:5px 9px;margin-bottom:5px}.sleep-entry-head strong{color:#35484d;font-size:12px}
+    .sleep-time{color:#8a9493;font-size:10px}.sleep-copy{margin:5px 0 0;color:#536267;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere}
+    .sleep-subtitle{margin:10px 0 4px;color:#87908e;font-size:10px;letter-spacing:.04em}.sleep-facts{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+    .sleep-fact{padding:2px 7px;border:1px solid #e5e0d4;border-radius:99px;color:#727e7e;background:#f7f5ef;font-size:10px}
+    .sleep-action,.sleep-memory{margin-top:8px;padding:11px;border:1px solid #e6e2d8;border-radius:5px;background:#fffefa}
+    .sleep-action h4,.sleep-memory h4{margin:0;color:#394d51;font:14px/1.4 var(--serif);overflow-wrap:anywhere}
+    .sleep-action .body,.sleep-memory .body{margin-top:7px}
+    .sleep-memory{border-left:3px solid #72917b}.sleep-memory.stale{border-left-color:#bc925d}
+    .memory-open{min-height:31px;margin-top:9px;padding:4px 9px;border:1px solid #d9d1c2;border-radius:4px;color:#465b5b;background:#f8f5ed;font-size:10px}
+    .memory-open:hover{border-color:#ad926b;background:#fffaf0}
+    .technical{margin-top:7px;border:1px solid #e7e3da;border-radius:4px;background:#faf9f5}
+    .technical summary{padding:6px 9px;color:#768181;font-size:10px;cursor:pointer}.technical .code{margin:0;border-radius:0 0 4px 4px}
+    .trace-empty{padding:18px 11px;border:1px dashed #dcd7cc;border-radius:5px;color:#828d8c;text-align:center;font-size:11px}
+    .empty,.error,.loading{padding:25px 12px;color:#849091;text-align:center}.error{color:#a3584e}.loading:before{display:inline-block;width:12px;height:12px;margin-right:7px;border:1px solid #b9aa91;border-right-color:transparent;border-radius:50%;vertical-align:-2px;animation:spin .8s linear infinite;content:""}
+    .persona-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}.persona{margin:0;padding:15px}.persona h3{overflow-wrap:anywhere}.persona-id{margin:-2px 0 9px;color:#899294}.footnote{margin:14px 0;color:#909998;font-size:10px}.mono{font:10px var(--mono);overflow-wrap:anywhere}
+    @keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
+    @media(max-width:1050px){main{padding-right:22px;padding-left:22px}.overview{grid-template-columns:repeat(2,minmax(0,1fr))}.band{grid-template-columns:1fr}.band-side{flex-wrap:wrap}}
+    @media(max-width:720px){.layout{display:block}aside{padding:13px 12px 9px}.brand{padding:0 4px 12px}.brand strong{font-size:16px}.rail-label,.rail-foot{display:none}nav{display:flex;overflow-x:auto;gap:4px}.nav{flex:none;width:auto;padding:8px 9px;font-size:11px}.glyph{width:19px}
+      main{padding:0 13px 28px}.topline{min-height:53px}#view{padding-top:19px}.heading{align-items:start;margin-bottom:17px}h1{font-size:29px}.split{grid-template-columns:1fr}.detail{min-height:220px;padding:16px}.persona-grid{grid-template-columns:1fr}.overview{gap:7px}.stat{min-height:106px;padding:13px}.stat strong{font-size:29px}.band-side{gap:15px}.sleep-toolbar{align-items:flex-start;flex-direction:column}.sleep-mode{width:100%}.sleep-mode button{flex:1}.sleep-timeline{padding-left:16px}.sleep-entry:before{left:-16px}}
+  </style>
 </head>
 <body>
-<div class="shell">
-  <!-- 侧边栏 -->
-  <aside class="panel sidebar">
-    <div class="brand">
-      <p class="eyebrow">Memory Trace</p>
-      <h1>Engram Memory</h1>
-      <p class="subtitle">三层记忆 · 人物连接</p>
-    </div>
-    <nav class="nav">
-      <button class="nav-btn active" data-page="overview"><span class="dot"></span>总览</button>
-      <button class="nav-btn" data-page="memories"><span class="dot"></span>记忆管理</button>
-      <button class="nav-btn" data-page="streams"><span class="dot"></span>聊天流</button>
-      <button class="nav-btn" data-page="persons"><span class="dot"></span>人物认知</button>
-      <button class="nav-btn" data-page="settings"><span class="dot"></span>工具</button>
-    </nav>
-    <div class="sidebar-foot" id="sideStatus">连接中…</div>
-  </aside>
-
-  <!-- 主区 -->
-  <main class="main">
-    <!-- 总览 -->
-    <section class="page active" id="page-overview">
-      <div class="page-head"><div><h2>记忆总览</h2><p class="hint">三层记忆分布、人物/流统计与最近动态</p></div></div>
-      <div class="stat-grid" id="statGrid"></div>
-      <div class="stat-grid second" id="statGrid2" style="margin-top:12px"></div>
-      <div class="panel" style="padding:16px">
-        <div class="toolbar"><h3 style="margin:0;font-size:15px">最近记忆</h3><span class="hint" style="flex:1"></span>
-          <button class="btn ghost small" onclick="loadOverview()">刷新</button></div>
-        <div class="table-wrap"><table id="recentTable"></table></div>
-      </div>
-    </section>
-
-    <!-- 记忆管理 -->
-    <section class="page" id="page-memories">
-      <div class="page-head"><div><h2>记忆管理</h2><p class="hint">检索、筛选、编辑三层记忆</p></div>
-        <button class="btn" onclick="openCreate()">+ 新建记忆</button></div>
-      <div class="panel" style="padding:16px">
-        <div class="toolbar">
-          <input id="memSearch" placeholder="搜索标题/内容…" onkeydown="if(event.key==='Enter')loadMemories()" />
-          <input id="memPerson" placeholder="人物 ID（如 qq:123）" onkeydown="if(event.key==='Enter')loadMemories()" />
-          <button class="btn ghost" onclick="loadMemories()">查询</button>
-          <div class="chips" style="margin-left:auto">
-            <button class="chip active" data-layer="" onclick="filterLayer(this,'')">全部</button>
-            <button class="chip" data-layer="short_term" onclick="filterLayer(this,'short_term')">短期</button>
-            <button class="chip" data-layer="active" onclick="filterLayer(this,'active')">中期</button>
-            <button class="chip" data-layer="archived" onclick="filterLayer(this,'archived')">长期</button>
-          </div>
-        </div>
-        <div class="table-wrap"><table id="memTable"></table></div>
-      </div>
-    </section>
-
-    <!-- 聊天流 -->
-    <section class="page" id="page-streams">
-      <div class="page-head"><div><h2>聊天流</h2><p class="hint">按聊天流聚合查看全部记忆</p></div>
-        <button class="btn ghost" onclick="loadStreams()">刷新</button></div>
-      <div class="panel" style="padding:16px">
-        <div class="toolbar">
-          <select id="streamLayerFilter" onchange="loadStreams()">
-            <option value="">全部层</option>
-            <option value="short_term">短期</option>
-            <option value="active">中期</option>
-            <option value="archived">长期</option>
-          </select>
-          <input id="streamSearch" placeholder="搜索流 ID…" onkeydown="if(event.key==='Enter')loadStreams()" />
-          <button class="btn ghost" onclick="loadStreams()">查询</button>
-        </div>
-        <div class="table-wrap"><table id="streamTable"></table></div>
-        <div id="streamMemories" style="margin-top:14px"></div>
-      </div>
-    </section>
-
-    <!-- 人物认知 -->
-    <section class="page" id="page-persons">
-      <div class="page-head"><div><h2>人物认知</h2><p class="hint">按人物查看印象与相关记忆</p></div></div>
-      <div class="panel" style="padding:16px">
-        <div class="toolbar">
-          <input id="personQuery" placeholder="昵称或 person_id…" onkeydown="if(event.key==='Enter')lookupPerson()" />
-          <button class="btn ghost" onclick="lookupPerson()">查询</button>
-          <button class="btn ghost" style="margin-left:auto" onclick="loadPersonList()">所有人</button>
-        </div>
-        <div id="personList"></div>
-        <div id="personResult"></div>
-      </div>
-    </section>
-
-    <!-- 工具 -->
-    <section class="page" id="page-settings">
-      <div class="page-head"><div><h2>工具</h2><p class="hint">数据维护与手动操作</p></div></div>
-      <div class="panel" style="padding:20px">
-        <h3 style="margin-top:0">关于</h3>
-        <p class="hint" style="margin-top:4px">Engram Memory 管理后台 v1.0.0</p>
-      </div>
-    </section>
-  </main>
-</div>
-
-<!-- 编辑/新建弹窗 -->
-<div class="modal-backdrop" id="memModal">
-  <div class="modal">
-    <div class="modal-head"><h3 id="memModalTitle">新建记忆</h3><button class="modal-close" onclick="closeModal()">×</button></div>
-    <div class="field"><label>标题</label><input id="f_title" /></div>
-    <div class="field"><label>内容</label><textarea id="f_content"></textarea></div>
-    <div class="field"><label>层级</label>
-      <select id="f_layer"><option value="active">中期（active）</option><option value="archived">长期（archived）</option><option value="short_term">短期（short_term）</option></select></div>
-    <div class="field"><label>事件时间（Unix 时间戳）</label><input id="f_event_time" type="number" /></div>
-    <div class="field"><label>核心人物（platform:user_id）</label><input id="f_person_id" /></div>
-    <div class="field"><label>核心标签（逗号分隔）</label><input id="f_core_tags" /></div>
-    <div class="field"><label>扩散标签（逗号分隔）</label><input id="f_diffusion_tags" /></div>
-    <div class="field"><label>对立标签（逗号分隔）</label><input id="f_opposing_tags" /></div>
-    <div class="field"><label>涉及人物（逗号分隔）</label><input id="f_related_people" /><div class="multi-hint">格式 platform:user_id，多个用逗号分隔</div></div>
-    <div class="field"><label>关联记忆 ID（逗号分隔）</label><input id="f_relation_ids" /><div class="multi-hint">多个用逗号分隔</div></div>
-    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
-      <button class="btn ghost" onclick="closeModal()">取消</button>
-      <button class="btn" onclick="saveMemory()">保存</button>
-    </div>
+  <div class="layout">
+    <aside>
+      <div class="brand"><span class="seal" aria-hidden="true">E</span><span><strong>Engram</strong><small>Memory archive</small></span></div>
+      <p class="rail-label">档案目录</p>
+      <nav aria-label="档案栏目">
+        <button class="nav" data-view="overview" aria-current="page"><span class="glyph">⌂</span>运行概览</button>
+        <button class="nav" data-view="memories"><span class="glyph">▤</span>正式记忆</button>
+        <button class="nav" data-view="candidates"><span class="glyph">◫</span>候选积压</button>
+        <button class="nav" data-view="sleep"><span class="glyph">◷</span>Sleep 会话</button>
+        <button class="nav" data-view="personas"><span class="glyph">♙</span>人物印象</button>
+      </nav>
+      <div class="rail-foot"><strong>本地记忆管理</strong>查看记忆与来源，整理新候选，仅在本机开放。</div>
+    </aside>
+    <main>
+      <div class="topline"><span class="crumb">ENGRAM / <span id="crumb">运行概览</span></span><div class="top-actions"><span class="local">LOCAL ACCESS</span><button class="refresh" id="refresh" aria-label="刷新" title="刷新">↻</button></div></div>
+      <div id="view" aria-live="polite"></div>
+    </main>
   </div>
-</div>
-
-<div class="toast" id="toast"></div>
-
-<script>
-const API = '/engram-memory/api';
-let currentLayer = '';
-let editingId = null;
-
-// ===== 工具 =====
-function toast(msg, ok) {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.className = 'toast show ' + (ok ? 'ok' : 'err');
-  setTimeout(() => t.className = 'toast', 2600);
-}
-function esc(s) {
-  const el = document.createElement('span');
-  el.textContent = String(s ?? '');
-  return el.innerHTML;
-}
-function layerBadge(layer) {
-  const label = {short_term:'短期', active:'中期', archived:'长期'}[layer] || layer;
-  return `<span class="layer-badge layer-${esc(layer)}">${esc(label)}</span>`;
-}
-function tags(tags) { return (tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join(''); }
-function fmtTs(ts) {
-  if (!ts) return '—';
-  const d = new Date(ts * 1000);
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-}
-
-// ===== 导航 =====
-document.querySelectorAll('.nav-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById('page-' + btn.dataset.page).classList.add('active');
-    if (btn.dataset.page === 'overview') loadOverview();
-    if (btn.dataset.page === 'memories') loadMemories();
-    if (btn.dataset.page === 'streams') loadStreams();
-    if (btn.dataset.page === 'persons') loadPersonList();
-  });
-});
-
-// ===== 总览 =====
-async function loadOverview() {
-  try {
-    // 轻量状态，全量统计走 /stats
-    fetch(API + '/status').then(r => r.json()).then(sd => {
-      if (sd && sd.counts) {
-        const c = sd.counts;
-        document.getElementById('sideStatus').textContent =
-          `记忆总数 ${(c.short_term||0)+(c.active||0)+(c.archived||0)}`;
-      }
-    }).catch(() => {});
-    const r = await fetch(API + '/stats'); const d = await r.json();
-    const counts = d.counts || {};
-    const deleted = d.deleted || {};
-    const total = (counts.short_term||0)+(counts.active||0)+(counts.archived||0);
-    document.getElementById('statGrid').innerHTML = [
-      {label:'短期记忆', value: counts.short_term || 0, cls:''},
-      {label:'中期记忆', value: counts.active || 0, cls:'accent'},
-      {label:'长期记忆', value: counts.archived || 0, cls:'info'},
-      {label:'记忆总数', value: total, cls:''},
-    ].map(s => `<div class="stat-card"><div class="label">${s.label}</div><div class="value ${s.cls}">${s.value}</div></div>`).join('');
-    document.getElementById('statGrid2').innerHTML = [
-      {label:'关联人物', value: d.person_count || 0, cls:''},
-      {label:'聊天流', value: d.stream_count || 0, cls:''},
-      {label:'软删记忆', value: (deleted.short_term||0)+(deleted.active||0)+(deleted.archived||0), cls:'warn'},
-      {label:'过期短期', value: d.expired_short_term || 0, cls:'warn'},
-    ].map(s => `<div class="stat-card"><div class="label">${s.label}</div><div class="value ${s.cls}">${s.value}</div></div>`).join('');
-    const tb = document.getElementById('recentTable');
-    const items = d.recent || [];
-    tb.innerHTML = items.length ? `<tr><th>标题</th><th>层级</th><th>人物</th><th>更新时间</th><th></th></tr>` +
-      items.map(it => `<tr><td>${esc(it.title)}</td><td>${layerBadge(it.layer)}</td><td>${esc(it.person_id||'—')}</td><td>${fmtTs(it.updated_at)}</td><td><button class="btn small ghost" onclick="openDetail('${esc(it.memory_id)}')">查看</button></td></tr>`).join('')
-      : '<tr><td colspan="5" class="empty">暂无记忆</td></tr>';
-    document.getElementById('sideStatus').textContent = `记忆总数 ${total} · 人物 ${d.person_count||0} · 流 ${d.stream_count||0}`;
-  } catch (e) { toast('加载总览失败: ' + e, false); }
-}
-
-// ===== 记忆管理 =====
-function filterLayer(el, layer) {
-  document.querySelectorAll('.chip[data-layer]').forEach(c => c.classList.remove('active'));
-  el.classList.add('active'); currentLayer = layer; loadMemories();
-}
-async function loadMemories() {
-  const q = document.getElementById('memSearch').value.trim();
-  const person = document.getElementById('memPerson').value.trim();
-  let url = API + '/memories?limit=100';
-  if (currentLayer) url += '&layer=' + encodeURIComponent(currentLayer);
-  if (q) url += '&q=' + encodeURIComponent(q);
-  if (person) url += '&person_id=' + encodeURIComponent(person);
-  try {
-    const r = await fetch(url); const d = await r.json();
-    const tb = document.getElementById('memTable');
-    const items = d.items || [];
-    tb.innerHTML = items.length ? `<tr><th>标题</th><th>层级</th><th>人物</th><th>标签</th><th>更新时间</th><th>操作</th></tr>` +
-      items.map(it => `<tr>
-        <td>${esc(it.title)}</td>
-        <td>${layerBadge(it.layer)}</td>
-        <td>${esc(it.person_id||'—')}</td>
-        <td>${tags(it.core_tags)}</td>
-        <td>${fmtTs(it.updated_at)}</td>
-        <td><div class="row-actions">
-          <button class="btn small ghost" onclick="openDetail('${esc(it.memory_id)}')">查看</button>
-          <button class="btn small ghost" onclick="openEdit('${esc(it.memory_id)}')">编辑</button>
-          <button class="btn small danger" onclick="removeMemory('${esc(it.memory_id)}')">删除</button>
-        </div></td></tr>`).join('')
-      : '<tr><td colspan="6" class="empty">无匹配记忆</td></tr>';
-  } catch (e) { toast('加载记忆失败: ' + e, false); }
-}
-async function openDetail(id) {
-  try {
-    const r = await fetch(API + '/memories/' + id); const d = await r.json(); const it = d.item || {};
-    openModal('记忆详情');
-    document.getElementById('f_title').value = it.title || '';
-    document.getElementById('f_content').value = it.content || '';
-    document.getElementById('f_layer').value = it.layer || 'active';
-    document.getElementById('f_event_time').value = it.event_time || '';
-    document.getElementById('f_person_id').value = it.person_id || '';
-    document.getElementById('f_core_tags').value = (it.core_tags||[]).join(',');
-    document.getElementById('f_diffusion_tags').value = (it.diffusion_tags||[]).join(',');
-    document.getElementById('f_opposing_tags').value = (it.opposing_tags||[]).join(',');
-    document.getElementById('f_related_people').value = (it.related_people||[]).join(',');
-    document.getElementById('f_relation_ids').value = (it.relation_memory_ids||[]).join(',');
-    editingId = null;
-    const saveBtn = document.querySelector('#memModal .btn:last-of-type');
-    saveBtn.style.display = 'none';
-  } catch (e) { toast('读取详情失败: ' + e, false); }
-}
-function openCreate() {
-  openModal('新建记忆');
-  ['f_title','f_content','f_person_id','f_core_tags','f_diffusion_tags','f_opposing_tags','f_related_people','f_relation_ids'].forEach(i => document.getElementById(i).value = '');
-  document.getElementById('f_layer').value = 'active';
-  document.getElementById('f_event_time').value = Math.floor(Date.now()/1000);
-  editingId = null;
-  document.querySelector('#memModal .btn:last-of-type').style.display = '';
-}
-async function openEdit(id) {
-  try {
-    const r = await fetch(API + '/memories/' + id); const d = await r.json(); const it = d.item || {};
-    openModal('编辑记忆');
-    document.getElementById('f_title').value = it.title || '';
-    document.getElementById('f_content').value = it.content || '';
-    document.getElementById('f_layer').value = it.layer || 'active';
-    document.getElementById('f_event_time').value = it.event_time || '';
-    document.getElementById('f_person_id').value = it.person_id || '';
-    document.getElementById('f_core_tags').value = (it.core_tags||[]).join(',');
-    document.getElementById('f_diffusion_tags').value = (it.diffusion_tags||[]).join(',');
-    document.getElementById('f_opposing_tags').value = (it.opposing_tags||[]).join(',');
-    document.getElementById('f_related_people').value = (it.related_people||[]).join(',');
-    document.getElementById('f_relation_ids').value = (it.relation_memory_ids||[]).join(',');
-    editingId = id;
-    document.querySelector('#memModal .btn:last-of-type').style.display = '';
-  } catch (e) { toast('读取详情失败: ' + e, false); }
-}
-function splitList(v) { return v.split(',').map(s => s.trim()).filter(Boolean); }
-async function saveMemory() {
-  const body = {
-    title: document.getElementById('f_title').value.trim(),
-    content: document.getElementById('f_content').value.trim(),
-    layer: document.getElementById('f_layer').value,
-    event_time: parseFloat(document.getElementById('f_event_time').value || '0'),
-    person_id: document.getElementById('f_person_id').value.trim() || null,
-    core_tags: splitList(document.getElementById('f_core_tags').value),
-    diffusion_tags: splitList(document.getElementById('f_diffusion_tags').value),
-    opposing_tags: splitList(document.getElementById('f_opposing_tags').value),
-    related_people: splitList(document.getElementById('f_related_people').value),
-    relation_memory_ids: splitList(document.getElementById('f_relation_ids').value),
-  };
-  try {
-    if (editingId) {
-      await fetch(API + '/memories/' + editingId, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-      toast('记忆已更新', true);
-    } else {
-      await fetch(API + '/memories', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-      toast('记忆已创建', true);
+  <script>
+    "use strict";
+    const root = document.getElementById("view"), crumb = document.getElementById("crumb");
+    const titles = {overview:"运行概览",memories:"正式记忆",candidates:"候选积压",sleep:"Sleep 会话",personas:"人物印象"};
+    const state = {view:"overview",id:null,q:"",status:"",sleepMode:"readable"};
+    function el(tag, cls, text) { const n=document.createElement(tag); if(cls)n.className=cls; if(text!==undefined&&text!==null)n.textContent=String(text); return n; }
+    function date(value) { if(value===null||value===undefined||value==="")return "时间未知"; const d=new Date(typeof value==="number"?value*1000:value); return Number.isNaN(d.getTime())?String(value):new Intl.DateTimeFormat("zh-CN",{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).format(d); }
+    async function api(path,options={}) {
+      const r=await fetch(path,{headers:{Accept:"application/json"},cache:"no-store",credentials:"same-origin",...options});
+      let data={}; try{data=await r.json()}catch(_){}
+      if(!r.ok)throw new Error(data.detail||("请求失败（"+r.status+"）")); return data;
     }
-    closeModal(); loadMemories();
-  } catch (e) { toast('保存失败: ' + e, false); }
-}
-async function removeMemory(id) {
-  if (!confirm('确定删除记忆 ' + id + ' ？（软删除，可恢复）')) return;
-  try { await fetch(API + '/memories/' + id, {method:'DELETE'}); toast('已删除', true); loadMemories(); }
-  catch (e) { toast('删除失败: ' + e, false); }
-}
-function openModal(title) { document.getElementById('memModalTitle').textContent = title; document.getElementById('memModal').classList.add('show'); }
-function closeModal() { document.getElementById('memModal').classList.remove('show'); }
-
-// ===== 聊天流 =====
-async function loadStreams() {
-  const layer = document.getElementById('streamLayerFilter').value;
-  const q = document.getElementById('streamSearch').value.trim();
-  let url = API + '/streams';
-  if (layer) url += '?layer=' + encodeURIComponent(layer);
-  try {
-    const r = await fetch(url); const d = await r.json();
-    const tb = document.getElementById('streamTable');
-    let streams = d.streams || [];
-    if (q) streams = streams.filter(s => (s.stream_id||'').includes(q));
-    document.getElementById('streamMemories').innerHTML = '';
-    tb.innerHTML = streams.length ? `<tr><th>流 ID</th><th>短期</th><th>中期</th><th>长期</th><th>总计</th><th></th></tr>` +
-      streams.map(s => `<tr>
-        <td class="mono">${esc(s.stream_id)}</td>
-        <td>${s.counts.short_term||0}</td>
-        <td>${s.counts.active||0}</td>
-        <td>${s.counts.archived||0}</td>
-        <td><strong>${s.total}</strong></td>
-        <td><button class="btn small ghost" onclick="showStreamMemories('${esc(s.stream_id)}')">查看记忆</button></td>
-      </tr>`).join('')
-      : '<tr><td colspan="6" class="empty">无流数据</td></tr>';
-  } catch (e) { toast('加载流失败: ' + e, false); }
-}
-async function showStreamMemories(streamId) {
-  const box = document.getElementById('streamMemories');
-  try {
-    const r = await fetch(`${API}/memories?stream_id=${encodeURIComponent(streamId)}&limit=100`);
-    const d = await r.json(); const items = d.items || [];
-    box.innerHTML = `<div class="panel" style="padding:16px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <strong class="mono">${esc(streamId)}</strong>
-        <button class="btn small ghost" onclick="document.getElementById('streamMemories').innerHTML=''">收起</button>
-      </div>
-      <div class="table-wrap"><table>
-      <tr><th>标题</th><th>层级</th><th>人物</th><th>标签</th><th>更新时间</th><th></th></tr>` +
-      (items.length ? items.map(it => `<tr>
-        <td>${esc(it.title)}</td><td>${layerBadge(it.layer)}</td>
-        <td>${esc(it.person_id||'—')}</td><td>${tags(it.core_tags)}</td>
-        <td>${fmtTs(it.updated_at)}</td>
-        <td><button class="btn small ghost" onclick="openDetail('${esc(it.memory_id)}')">查看</button></td>
-      </tr>`).join('') : '<tr><td colspan="6" class="empty">该流无记忆</td></tr>') +
-      `</table></div></div>`;
-  } catch (e) { box.innerHTML = `<div class="empty">加载失败: ${esc(e)}</div>`; }
-}
-
-// ===== 人物列表 =====
-async function loadPersonList() {
-  const box = document.getElementById('personList');
-  try {
-    const r = await fetch(API + '/persons-list'); const d = await r.json();
-    const persons = d.persons || [];
-    box.innerHTML = `<div class="panel" style="padding:16px">
-      <h3 style="margin:0 0 12px;font-size:15px">所有关联人物（${persons.length}）</h3>
-      <div class="table-wrap"><table>
-      <tr><th>人物 ID</th><th>短期</th><th>中期</th><th>长期</th><th>总计</th><th></th></tr>` +
-      (persons.length ? persons.map(p => `<tr>
-        <td>${esc(p.person_id)}</td>
-        <td>${p.counts.short_term||0}</td><td>${p.counts.active||0}</td><td>${p.counts.archived||0}</td>
-        <td><strong>${p.total}</strong></td>
-        <td><button class="btn small ghost" onclick="lookupPersonFromList('${esc(p.person_id)}')">查看</button></td>
-      </tr>`).join('') : '<tr><td colspan="6" class="empty">暂无人物关联</td></tr>') +
-      `</table></div></div>`;
-  } catch (e) { box.innerHTML = `<div class="empty">加载失败: ${esc(e)}</div>`; }
-}
-function lookupPersonFromList(id) {
-  document.getElementById('personQuery').value = id;
-  document.getElementById('personList').innerHTML = '';
-  lookupPerson();
-}
-
-// ===== 人物认知 =====
-async function lookupPerson() {
-  const q = document.getElementById('personQuery').value.trim();
-  const box = document.getElementById('personResult');
-  if (!q) { box.innerHTML = '<div class="empty">输入昵称或 person_id 查询</div>'; return; }
-  try {
-    const r = await fetch(API + '/persons?q=' + encodeURIComponent(q)); const d = await r.json();
-    if (!d.ok) { box.innerHTML = `<div class="empty">${esc(d.error || '未找到')}</div>`; return; }
-    const p = d.person || {};
-    const mems = d.memories || [];
-    box.innerHTML = `
-      <div class="panel" style="padding:18px;margin-bottom:14px">
-        <h3 style="margin:0 0 10px">${esc(p.nickname || '未知用户')}</h3>
-        <div class="meta-line">
-          身份：${esc(p.platform||'')} ${esc(p.user_id||'')}（${esc(p.person_id||'')}）<br/>
-          认识于：${fmtTs(p.first_interaction)} · 最近活跃：${fmtTs(p.last_interaction)}<br/>
-          ${(p.nickname_history||[]).length ? '历史曾用名：' + esc((p.nickname_history||[]).map(h=>h.name).join('、')) + '<br/>' : ''}
-          印象：${esc(p.impression || '暂无印象')}
-        </div>
-      </div>
-      <div class="panel" style="padding:16px">
-        <h3 style="margin:0 0 12px;font-size:15px">相关记忆（${mems.length}）</h3>
-        <div class="table-wrap"><table id="personMemTable"></table></div>
-      </div>`;
-    const tb = document.getElementById('personMemTable');
-    tb.innerHTML = mems.length ? `<tr><th>标题</th><th>更新时间</th><th></th></tr>` +
-      mems.map(m => `<tr><td>${esc(m.title)}</td><td>${fmtTs(m.updated_at)}</td><td><button class="btn small ghost" onclick="switchToMemory('${esc(m.memory_id)}')">查看</button></td></tr>`).join('')
-      : '<tr><td colspan="3" class="empty">暂无相关记忆</td></tr>';
-  } catch (e) { box.innerHTML = `<div class="empty">查询失败: ${esc(e)}</div>`; }
-}
-function switchToMemory(id) {
-  document.querySelector('.nav-btn[data-page="memories"]').click();
-  document.getElementById('memSearch').value = '';
-  openDetail(id);
-}
-
-// ===== 初始化 =====
-loadOverview();
-</script>
+    function message(parent,cls,text){parent.replaceChildren(el("div",cls,text))}
+    function heading(kicker,title,sub){const h=el("div","heading"),c=el("div");c.append(el("p","eyebrow",kicker),el("h1","",title),el("p","sub",sub));h.append(c);return h}
+    const labels={ACTIVE:"可用",RESOLVED:"已处理",COMPLETED:"已完成",RECORDED:"已记录",FAILED:"失败",TOMBSTONED:"已封存",PENDING:"待整理",PROCESSING:"处理中",RUNNING:"运行中",DEFERRED:"暂缓",PARTIAL:"部分完成",MERGED:"已合并",AVAILABLE:"来源可读取",REDACTED:"来源已隐私删除",NOT_CAPTURED:"来源缺失",UNKNOWN:"未知",CREATE_NEW:"新建",REINFORCE:"强化",REVISE:"修订",MERGE:"合并",RELATE:"关联",DEFER:"暂缓",IGNORE:"不记入",PREPARED:"已准备",EXECUTING:"执行中",DAILY:"每日整理",PRESSURE:"积压整理",FACT:"事实",EVENT:"经历",PREFERENCE:"偏好",CHAT_MESSAGE:"聊天消息",LEGACY_IMPORT:"历史导入"};
+    Object.assign(labels,{RELATIONSHIP:"关系",COMMITMENT:"约定",PERSONAL_STATE:"个人状态",SOCIAL_PATTERN:"社交模式",INITIAL:"初次记录",DEVELOPMENT:"经历发展",CORRECTION:"更正",CLARIFICATION:"澄清",NEW_EVIDENCE:"补充来源",EXPLICIT_CORRECTION:"本人更正",ADMIN_CORRECTION:"管理员更正",MIGRATION_REWRITE:"迁移整理",MESSAGE_SET:"原始消息",ACTOR_WRITE:"主动记忆",SYSTEM_EVENT:"系统事件",LEGACY_RECORD:"历史记录",ADMIN:"管理员",EXTERNAL:"外部来源",MANUAL:"手动整理",RECOVERY:"中断恢复",SUCCEEDED:"成功",SUCCESS:"成功",COMMITTED:"已提交",NOT_STARTED:"未开始"});
+    function label(value){return labels[value]||value||"未知"}
+    function badge(value){const t=String(value||"UNKNOWN"),c=["ACTIVE","RESOLVED","COMPLETED","RECORDED"].includes(t)?"badge good":["FAILED","TOMBSTONED"].includes(t)?"badge bad":["PENDING","PROCESSING","RUNNING"].includes(t)?"badge":"badge quiet";return el("span",c,label(t))}
+    function section(parent,title){const s=el("section","detail-section");s.append(el("h3","",title));parent.append(s);return s}
+    function sourceCards(parent,sources){
+      const area=section(parent,"关联来源");
+      if(!sources||!sources.length){area.append(el("p","empty","没有记录关联来源。"));return}
+      for(const s of sources){const card=el("article","source");const top=el("div","source-head");top.append(badge(s.source_type),el("span","mono",s.evidence_id));if(s.revision_no)top.append(el("span","","第 "+s.revision_no+" 版"));if(s.observed_at)top.append(el("span","",date(s.observed_at)));card.append(top);
+        if(s.note)card.append(el("p","source-note",s.note));if(s.source_ref)card.append(el("p","source-note","来源标记："+s.source_ref));
+        for(const m of s.messages||[]){const snap=el("div","snapshot"),meta=el("div","source-head");meta.append(badge(m.snapshot_status),el("span","mono","流 "+m.stream_id),el("span","mono","消息 "+m.message_id));if(m.speaker)meta.append(el("span","",m.speaker));if(m.observed_at)meta.append(el("span","",date(m.observed_at)));snap.append(meta);snap.append(el("blockquote","",m.content||"来源快照正文不可用。"));card.append(snap)}
+        area.append(card);
+      }
+    }
+    function split(title){const grid=el("div","split"),left=el("section","panel"),head=el("div","panel-head"),list=el("div","list"),right=el("section","panel detail");head.append(el("h2","",title));left.append(head,list);message(right,"empty","从左侧选择一条记录查看档案。");grid.append(left,right);return{grid,left,list,right}}
+    function record(item,idKey,title,preview,meta,select){const b=el("button","record");b.type="button";b.setAttribute("aria-pressed",String(item[idKey]===state.id));const top=el("span","record-top");top.append(el("span","record-title",title||"未命名记录"),badge(item.status));b.append(top);const m=el("span","meta");for(const v of meta||[])if(v)m.append(el("span","",v));b.append(m);if(preview)b.append(el("span","preview",preview));b.addEventListener("click",select);return b}
+    async function render(){
+      root.replaceChildren(el("div","loading","正在读取档案…"));
+      try{if(state.view==="overview")await overview();else if(state.view==="memories")await memories();else if(state.view==="candidates")await candidates();else if(state.view==="sleep")await sleep();else await personas()}
+      catch(e){root.replaceChildren(heading("读取状态","档案暂不可用","请确认从本机打开管理页，且 Engram vNext Runtime 已就绪。"),el("div","panel error",e.message))}
+    }
+    async function overview(){
+      const r=await api("/engram-memory/api/status"),m=r.memory_counts||{},c=r.candidate_counts||{};
+      const h=heading("Runtime overview","记忆档案","查看已保存的记忆、来源和 Sleep 整理记录。");
+      const grid=el("div","overview");
+      for(const [label,value,note] of [["正式记忆",m.ACTIVE||0,"当前可用"],["记忆版本",r.revision_count||0,"包含保留的历史版本"],["自动整理积压",r.automatic_backlog_count||0,"新聊天的待整理候选"],["历史待整理",r.historical_backlog_count||0,"旧候选保留原状态"]]){
+        const card=el("div","stat");card.append(el("label","",label),el("strong","",value),el("small","",note));grid.append(card)}
+      const band=el("section","band"),copy=el("div"),side=el("div","band-side");copy.append(el("h2","","整理运行"),el("p","","新聊天已收到 "+(r.received_message_buffer_count||0)+" 条待检查消息；每个会话累计 "+r.encoder_message_threshold+" 条或等待 "+r.encoder_max_wait_minutes+" 分钟后编码。"));
+      if(r.flashback&&typeof r.flashback.enabled==="boolean"){
+        const flashback=r.flashback.effective?"已就绪":r.flashback.enabled?"已配置开启，待校准":"配置关闭";
+        const explanation=r.flashback.reason?" · "+r.flashback.reason:"";
+        copy.append(el("p","","自动闪回："+flashback+explanation));
+      }
+      for(const [label,value] of [["经历编码",r.encoder_paused?"已暂停":"运行中"],["自动整理起点",date(r.automatic_since)]]){const x=el("div"),strong=el("strong","",value);x.append(el("small","",label),strong);side.append(x)}
+      band.append(copy,side);const foot=el("p","footnote","候选状态：待整理 "+(c.PENDING||0)+" · 处理中 "+(c.PROCESSING||0)+" · 延后 "+(c.DEFERRED||0)+" · 已处理 "+(c.RESOLVED||0)+" · 失败 "+(c.FAILED||0));root.replaceChildren(h,grid,band,foot);
+    }
+    function filter(label,options,run){
+      const f=el("form","filters"),input=el("input"),select=options?el("select"):null;input.type="search";input.placeholder=label;input.setAttribute("aria-label",label);input.value=state.q;f.append(input);
+      if(select){select.setAttribute("aria-label","按状态筛选");for(const [v,t] of options){const o=el("option","",t);o.value=v;select.append(o)}select.value=state.status;f.append(select)}
+      const go=el("button","primary","查找");go.type="submit";f.append(go);f.addEventListener("submit",e=>{e.preventDefault();state.q=input.value.trim();state.status=select?select.value:"";state.id=null;render()});return f;
+    }
+    async function memories(){
+      const p=split("正式记忆"),opts=[["ACTIVE","当前有效"],["MERGED","已合并"],["TOMBSTONED","已封存"],["ALL","全部状态"]];
+      p.left.querySelector(".panel-head").after(filter("检索标题或正文",opts));
+      const h=heading("Canonical memories","正式记忆","浏览正式记忆的当前内容、版本沿革、人物信息与关联来源。");
+      const params=new URLSearchParams({q:state.q,status:state.status||"ACTIVE"}),r=await api("/engram-memory/api/memories?"+params);
+      p.list.replaceChildren();if(!r.items.length)message(p.list,"empty","没有找到符合条件的正式记忆。");
+      for(const x of r.items){const person=x.subject&&(x.subject.subject_label||x.subject.person_id||x.subject.subject_key);p.list.append(record(x,"memory_id",x.title,x.preview,[x.memory_kind,person,date(x.updated_at||x.last_experienced_at)],()=>{state.id=x.memory_id;detailMemory(p.right,x.memory_id)}))}
+      root.replaceChildren(h,p.grid);if(state.id)detailMemory(p.right,state.id);
+    }
+    async function detailMemory(target,id){
+      message(target,"loading","正在读取记忆与来源…");
+      try{const r=await api("/engram-memory/api/memories/"+encodeURIComponent(id)),x=r.item;target.replaceChildren();const current=(x.revisions||[]).find(v=>v.revision_id===x.current_revision_id),head=el("div","detail-head");
+        head.append(el("p","eyebrow","记忆档案 · "+(x.current_revision_no?"第 "+x.current_revision_no+" 版":"版本未知")),el("h2","",current?current.title:"正式记忆"));
+        const meta=el("div","meta");meta.append(badge(x.status),el("span","mono",x.memory_id),el("span","","创建 "+date(x.created_at)));head.append(meta);target.append(head);
+        for(const v of x.revisions||[]){const card=el("article","revision"),top=el("div","record-top");top.append(el("h3","","第 "+v.revision_no+" 版 · "+v.title),badge(v.change_reason));card.append(top,el("p","meta",v.memory_kind+" · "+(v.subject?.subject_label||v.subject?.person_id||v.subject?.subject_key||"未指定主体")+" · "+date(v.created_at)),el("p","body",""+v.content));
+          if(v.participants&&v.participants.length)card.append(el("p","meta","参与者："+v.participants.map(a=>a.label||a.person_id||a.participant_kind).join("、")));target.append(card)}
+        sourceCards(target,x.sources);
+        if(x.relations&&x.relations.length){const rel=section(target,"记忆关系");for(const a of x.relations){const c=el("article","source");c.append(el("div","source-head",a.relation_type+" · "+a.related_memory_id));if(a.reason)c.append(el("p","source-note",a.reason));rel.append(c)}}
+      }catch(e){message(target,"error",e.message)}
+    }
+    async function candidates(){
+      const p=split("候选积压"),opts=[["","全部状态"],["PENDING","待整理"],["PROCESSING","处理中"],["DEFERRED","已延后"],["FAILED","失败"],["RESOLVED","已处理"]];
+      p.left.querySelector(".panel-head").after(filter("查找候选原文",opts));
+      const h=heading("Candidate queue","候选积压","查看候选原文、处理状态，以及其已关联的来源消息快照。");
+      const params=new URLSearchParams({q:state.q,limit:"60"});if(state.status)params.set("status",state.status);
+      const r=await api("/engram-memory/api/candidates?"+params);p.list.replaceChildren();if(!r.items.length)message(p.list,"empty","没有符合条件的候选。");
+      for(const x of r.items)p.list.append(record(x,"candidate_id",x.title,x.preview,["来源 "+x.evidence_count,x.proposed_kind,date(x.created_at)],()=>{state.id=x.candidate_id;detailCandidate(p.right,x.candidate_id)}));
+      root.replaceChildren(h,p.grid);if(state.id)detailCandidate(p.right,state.id);
+    }
+    async function detailCandidate(target,id){
+      message(target,"loading","正在读取候选来源…");
+      try{const r=await api("/engram-memory/api/candidates/"+encodeURIComponent(id)),x=r.item;target.replaceChildren();const head=el("div","detail-head");
+        head.append(el("p","eyebrow","候选档案"),el("h2","",x.title));const meta=el("div","meta");meta.append(badge(x.status),el("span","mono",x.candidate_id),el("span","","记录于 "+date(x.created_at)));head.append(meta);target.append(head);
+        section(target,"候选原文").append(el("p","body",x.content));const judgment=section(target,"编码判断");
+        if(x.subject)judgment.append(el("p","source-note","主体："+(x.subject.subject_label||x.subject.person_id||x.subject.subject_key||x.subject.subject_kind)));
+        if(x.participants&&x.participants.length)judgment.append(el("p","source-note","参与者："+x.participants.map(a=>a.label||a.person_id||a.participant_kind).join("、")));
+        if(x.processing_session_id)judgment.append(el("p","meta","整理会话 "+x.processing_session_id));if(x.last_error)judgment.append(el("p","source-note",x.last_error));
+        sourceCards(target,x.sources);
+      }catch(e){message(target,"error",e.message)}
+    }
+    const sleepActionLabels={CREATE_NEW:"新建",REINFORCE:"强化",REVISE:"修订",MERGE:"合并",RELATE:"关联",DEFER:"暂缓",IGNORE:"忽略"};
+    const sleepEventLabels={session_start:"会话开始",session_end:"会话结束",group_start:"开始检查一组候选",model_input:"请求模型判断",model_output:"模型输出",model_error:"模型调用失败",protocol_error:"协议格式错误",group_decision:"候选组决定",action_start:"开始执行动作",action_end:"动作执行完成",SEARCH:"检索正式记忆",MEMORY_READ:"读取记忆",EVIDENCE_READ:"读取来源",PERSON_LOOKUP:"读取人物资料",recent_formal_memories:"预读近期记忆",self_check:"执行后回读核对",readback:"执行后回读核对"};
+    Object.assign(sleepEventLabels,{MESSAGE_CONTEXT_READ:"查看原始聊天前后文",context_sources_saved:"保存实际引用的上下文证据"});
+    Object.assign(sleepEventLabels,{persona_review_start:"开始检查人物印象",persona_model_input:"人物印象：请求模型判断",persona_model_output:"人物印象：模型决定",persona_search:"人物印象：搜索过往记忆",persona_read:"人物印象：读取正式记忆",persona_review_end:"人物印象：审查与核心回读完成",persona_skipped:"人物印象：暂缓审查",persona_length_rejected:"人物印象：需要重新凝练正文",post_action_review_input:"执行后：将正文与来源交给模型核对",post_action_review_output:"执行后：模型核对结果",post_action_review_complete:"执行后：核对完成",post_action_review_failed:"执行后：核对失败，等待复核",post_action_correction_applied:"执行后：已纠正并回读",post_action_correction_rejected:"执行后：纠正被拒绝",overall_summary:"整轮结束：耗时与模型调用量"});
+    function actionName(value){const key=String(value||"").toUpperCase();return sleepActionLabels[key]||label(key)||"未注明动作"}
+    function parsed(value){
+      if(typeof value!=="string")return value;
+      const trimmed=value.trim();if(!trimmed||(!trimmed.startsWith("{")&&!trimmed.startsWith("[")))return value;
+      try{return JSON.parse(trimmed)}catch(_){return value}
+    }
+    function asRecord(value){const result=parsed(value);return result&&typeof result==="object"&&!Array.isArray(result)?result:{}}
+    function jsonText(value){try{return JSON.stringify(value===undefined?null:value,null,2)}catch(_){return String(value)}}
+    function technical(parent,title,value){
+      if(value===undefined||value===null)return;
+      const details=el("details","technical"),summary=el("summary","",title);
+      details.append(summary,el("pre","code",typeof value==="string"?value:jsonText(value)));parent.append(details);
+    }
+    function sleepStatus(value){const key=String(value||"UNKNOWN").toUpperCase();return badge(key)}
+    function addFact(parent,text){if(text!==undefined&&text!==null&&text!=="")parent.append(el("span","sleep-fact",text))}
+    function arrayAt(value,...keys){
+      const record=asRecord(value);
+      for(const key of keys){const item=parsed(record[key]);if(Array.isArray(item))return item}
+      return Array.isArray(parsed(value))?parsed(value):[];
+    }
+    function countText(value,labelText){return Array.isArray(value)?value.length+" "+labelText:typeof value==="number"?value+" "+labelText:null}
+    function candidateLabel(id,claims){const found=(claims||[]).find(item=>item.candidate_id===id);return found?.candidate_title||"候选记录"}
+    function addCandidateFacts(parent,ids,claims){
+      const values=Array.isArray(ids)?ids:typeof ids==="string"?[ids]:[];
+      if(!values.length)return;
+      addFact(parent,"候选 "+values.map(id=>candidateLabel(id,claims)).join("、"));
+      if(values.length>1)addFact(parent,values.length+" 条候选");
+      technical(parent,"候选 ID",values);
+    }
+    function actionCard(parent,rawAction,claims,caption){
+      const action=asRecord(rawAction),type=action.action_type||action.operation_type||action.type;
+      const card=el("article","sleep-action"),top=el("div","record-top"),title=action.title||action.new_memory?.title||action.memory_title;
+      top.append(el("h4","",(caption?caption+" · ":"")+actionName(type)+(title?" · "+title:"")));
+      if(action.status)top.append(sleepStatus(action.status));card.append(top);
+      const ids=action.candidate_ids||action.candidate_id;addCandidateFacts(card,ids,claims);
+      const reason=action.reason||action.note||action.rationale;
+      if(reason)card.append(el("p","sleep-copy","理由："+reason));
+      const body=action.content||action.new_memory?.content;
+      if(body)technical(card,"查看拟定正文",body);
+      const facts=el("div","sleep-facts");let hasFacts=false;
+      const sources=action.source_message_ids||action.evidence_ids||action.source_evidence_ids;
+      const sourceCount=countText(sources,"条来源");if(sourceCount){addFact(facts,sourceCount);hasFacts=true}
+      const sourceMemories=countText(action.source_memory_ids,"条合并来源记忆");if(sourceMemories){addFact(facts,sourceMemories);hasFacts=true}
+      const people=action.participants||action.people||action.persons;
+      if(Array.isArray(people)&&people.length){
+        const names=people.map(person=>typeof person==="string"?person:person?.label||person?.display_name||person?.subject_label||person?.person_id||person?.subject_key).filter(Boolean);
+        if(names.length){addFact(facts,"人物 "+names.join("、"));hasFacts=true}
+        if(!names.length){addFact(facts,people.length+" 位关联人物");hasFacts=true}
+      }
+      const subject=action.subject;
+      if(subject&&!people){const subjectRecord=asRecord(subject),name=typeof subject==="string"?subject:subjectRecord.subject_label||subjectRecord.display_name||subjectRecord.label||subjectRecord.person_id||subjectRecord.subject_key;if(name){addFact(facts,"人物 "+name);hasFacts=true}}
+      if(hasFacts)card.append(facts);
+      const idsForDetail={};
+      for(const key of ["memory_id","canonical_memory_id","source_memory_id","target_memory_id","source_memory_ids","target_memory_ids","source_message_ids","evidence_ids","operation_key"]){if(action[key]!==undefined)idsForDetail[key]=action[key]}
+      if(Object.keys(idsForDetail).length)technical(card,"相关技术 ID",idsForDetail);
+      if(!type&&!title&&!reason&&!body)technical(card,"结构化动作",rawAction);
+      parent.append(card);return card;
+    }
+    function traceResultItems(value){
+      const parsedValue=parsed(value);if(Array.isArray(parsedValue))return parsedValue;
+      const record=asRecord(parsedValue);
+      for(const key of ["items","results","memories","matches","records","evidence"]){if(Array.isArray(parsed(record[key])))return parsed(record[key])}
+      return [];
+    }
+    function renderSearchEntry(card,data){
+      const request=asRecord(data.request),query=data.query||request.query;
+      const queries=Array.isArray(data.queries)?data.queries:Array.isArray(request.queries)?request.queries:[];
+      if(query)card.append(el("p","sleep-copy","检索内容："+query));
+      for(const item of queries){const row=asRecord(item);if(row.query)card.append(el("p","sleep-copy","检索内容："+row.query));addCandidateFacts(card,row.candidate_ids,data.claims||[])}
+      const result=data.results!==undefined?data.results:data.result;
+      if(result===undefined){card.append(el("p","sleep-copy","记录了检索请求；此事件没有附带结果字段。"));return}
+      const items=traceResultItems(result);
+      card.append(el("p","sleep-copy",items.length?"检索结果："+items.length+" 条":"本次检索没有返回匹配记忆。"));
+      for(const item of items.slice(0,8)){
+        const row=asRecord(item),title=row.title||row.memory_title||row.name||"检索结果";
+        const resultCard=el("div","source");resultCard.append(el("div","source-head",title));
+        const preview=row.preview||row.snippet||row.current_content_preview||row.content;if(preview)resultCard.append(el("p","source-note",preview));
+        const id=row.memory_id||row.id;if(id)technical(resultCard,"记忆 ID",id);card.append(resultCard);
+      }
+      if(items.length>8)card.append(el("p","sleep-copy","另有 "+(items.length-8)+" 条结果，原始模式可查看完整记录。"));
+    }
+    function renderMemoryReadEntry(card,data){
+      const request=asRecord(data.request),raw=data.memory||data.result||data.result_memory||data;
+      const record=asRecord(raw),memory=asRecord(record.memory||record.item||raw),revision=asRecord(memory.current_revision||record.current_revision||memory.revision||record.revision);
+      const title=revision.title||memory.title||record.title;
+      if(title)card.append(el("strong","",title));
+      const content=revision.content||memory.content||record.content;
+      if(content)card.append(el("p","body",content));
+      const memoryId=data.memory_id||request.memory_id||memory.memory_id||record.memory_id;
+      if(memoryId)technical(card,"记忆 ID",memoryId);
+      if(!title&&!content)card.append(el("p","sleep-copy","记录了记忆回读；摘要字段未包含标题或正文。"));
+      const evidence=record.evidence||data.evidence;if(evidence!==undefined)renderEvidenceList(card,evidence);
+    }
+    function renderEvidenceList(parent,raw){
+      const records=traceResultItems(raw),totalMessages=records.reduce((total,item)=>{
+        const row=asRecord(item),messages=Array.isArray(row.messages)?row.messages:[];return total+messages.length;
+      },0);
+      parent.append(el("p","sleep-copy","来源记录："+records.length+" 份 · 消息快照："+totalMessages+" 条"));
+      for(const item of records.slice(0,8)){
+        const row=asRecord(item),card=el("div","source"),head=el("div","source-head"),messages=Array.isArray(row.messages)?row.messages:[];
+        head.append(el("strong","",row.title||("来源记录 · "+messages.length+" 条消息")));card.append(head);
+        for(const message of messages.slice(0,5)){
+          const snapshot=asRecord(message.snapshot||message),text=snapshot.text||snapshot.content||snapshot.processed_plain_text;
+          if(!text)continue;
+          const who=snapshot.sender_cardname||snapshot.sender_name||snapshot.speaker;
+          const when=snapshot.message_time_local||snapshot.time||message.observed_at;
+          card.append(el("p","meta",[who,when?date(when):null].filter(Boolean).join(" · ")),el("p","source-note",text));
+        }
+        if(row.evidence_id)technical(card,"来源 ID",row.evidence_id);parent.append(card);
+      }
+      if(records.length>8)parent.append(el("p","sleep-copy","另有 "+(records.length-8)+" 份来源记录，原始模式可查看完整内容。"));
+    }
+    function renderModelStep(parent,rawStep,claims){
+      const step=asRecord(rawStep),type=String(step.step_type||step.action_type||step.tool||"").toUpperCase();
+      if(type==="SEARCH"){
+        const card=el("article","sleep-action");card.append(el("h4","","模型请求检索"));
+        const query=step.query;if(query)card.append(el("p","sleep-copy","检索内容："+query));
+        for(const request of Array.isArray(step.queries)?step.queries:[]){const row=asRecord(request);if(row.query)card.append(el("p","sleep-copy","检索内容："+row.query));addCandidateFacts(card,row.candidate_ids,claims)}
+        addCandidateFacts(card,step.candidate_ids,claims);technical(card,"查询参数",rawStep);parent.append(card);return;
+      }
+      if(type==="MEMORY_READ"){
+        const card=el("article","sleep-action");card.append(el("h4","","模型请求读取记忆"));
+        if(step.memory_id)technical(card,"记忆 ID",step.memory_id);if(step.view)addFact(card,"视图 "+step.view);parent.append(card);return;
+      }
+      if(type==="EVIDENCE_READ"){
+        const card=el("article","sleep-action");card.append(el("h4","","模型请求读取来源"));
+        const ids=step.evidence_ids;if(Array.isArray(ids))addFact(card,ids.length+" 条来源");if(ids)technical(card,"来源 ID",ids);parent.append(card);return;
+      }
+      if(type==="MESSAGE_CONTEXT_READ"){
+        const card=el("article","sleep-action");card.append(el("h4","","模型请求查看原始聊天前后文"));
+        addFact(card,"前 "+(step.before??8)+" 条 · 后 "+(step.after??8)+" 条 · 核对回复目标");
+        technical(card,"来源与消息参数",rawStep);parent.append(card);return;
+      }
+      if(type==="DECIDE"){
+        const actions=Array.isArray(step.actions)?step.actions:[];
+        const wrap=el("div");wrap.append(el("p","sleep-copy","模型提出的决定；以下内容尚不能单独证明已经写入。"));
+        for(const action of actions)actionCard(wrap,action,claims,"拟定");
+        if(!actions.length)technical(wrap,"结构化输出",rawStep);parent.append(wrap);return;
+      }
+      if(sleepActionLabels[type]){actionCard(parent,step,claims,"模型输出，待核验执行");return}
+      const card=el("article","sleep-action");card.append(el("h4","","模型输出步骤"+(type?" · "+type:"")));technical(card,"结构化输出",rawStep);parent.append(card);
+    }
+    function renderTraceEvent(parent,event,claims){
+      const name=String(event?.event||"unknown"),key=name.toUpperCase(),data=asRecord(event?.data),card=el("article","sleep-entry"),head=el("div","sleep-entry-head");
+      let heading=sleepEventLabels[name]||sleepEventLabels[key]||"运行记录",tone="";
+      if(name==="protocol_error"||name==="model_error"){tone=" warn";card.classList.add("warn")}
+      if(name==="action_end"||name==="self_check"||name==="readback"){tone=" done";card.classList.add("done")}
+      const step=Number.isFinite(Number(data.step))&&data.step!==undefined?" · 第 "+data.step+" 步":"";
+      head.append(el("strong","",heading+step),el("span","sleep-time",date(event?.time)));card.append(head);
+      if(data.redacted===true){
+        card.append(el("p","sleep-notice","关联来源已隐私删除，本会话详细内容已清除。"));
+      }else if(name.startsWith("persona_")){
+        if(data.impression)card.append(el("p","body",data.impression));
+        const decision=asRecord(data.decision);
+        if(decision.impression_text)card.append(el("p","body",decision.impression_text));
+        if(data.reason||decision.reason)card.append(el("p","sleep-copy",data.reason||decision.reason));
+        if(data.model_calls!==undefined)addFact(card,"模型调用 "+data.model_calls+" 次");
+        if(data.elapsed_seconds!==undefined)addFact(card,"耗时 "+Number(data.elapsed_seconds).toFixed(1)+" 秒");
+        if(name==="persona_model_input")card.append(el("p","sleep-copy","结合核心人物印象与正式记忆，判断是否需要更新。"));
+        technical(card,"查看人物印象审查详情",data);
+      }else if(name==="model_input"){
+        card.append(el("p","sleep-copy","Sleep 请求模型结合当前上下文给出下一步。"));
+        const prompt=data.prompt||data.payload;if(prompt)technical(card,"查看当时模型输入",prompt);
+      }else if(name==="model_output"||name==="post_action_review_output"){
+        if(name==="post_action_review_output")card.append(el("p","sleep-copy","已写入后再次对照真实来源；此处忽略表示正文无需纠正。"));
+        let steps=parsed(data.steps);
+        if(!Array.isArray(steps)&&data.raw_response)steps=parsed(data.raw_response);
+        if(Array.isArray(steps)){for(const stepValue of steps)renderModelStep(card,parsed(stepValue),claims)}
+        else{card.append(el("p","sleep-copy","已记录模型响应，但无法解析为已知步骤类型。"));if(data.raw_response)technical(card,"模型原始响应",data.raw_response);else technical(card,"模型输出字段",data)}
+      }else if(name==="overall_summary"){
+        if(data.status)addFact(card,"状态 "+label(String(data.status).toUpperCase()));
+        if(data.elapsed_seconds!==undefined)addFact(card,"整轮耗时 "+Number(data.elapsed_seconds).toFixed(1)+" 秒");
+        if(data.sleep_llm_calls!==undefined)addFact(card,"记忆整理调用 "+data.sleep_llm_calls+" 次");
+        if(data.persona_llm_calls!==undefined)addFact(card,"人物印象调用 "+data.persona_llm_calls+" 次");
+      }else if(name==="post_action_review_input"){
+        card.append(el("p","sleep-copy","把已执行的动作、正式记忆回读和原始消息交给模型，检查人物、时间、计划及陈述归属。"));
+        technical(card,"查看实际复核输入",data.prompt||data);
+      }else if(name.startsWith("post_action_")){
+        if(data.error||data.reason)card.append(el("p","sleep-copy",data.error||data.reason));
+        if(data.correction_count!==undefined)addFact(card,"需要纠正 "+data.correction_count+" 条");
+        if(data.writes_committed)card.append(el("p","sleep-copy","已有正式写入保留，未完成的复核将再次处理。"));
+        technical(card,"查看执行后复核记录",data);
+      }else if(name==="protocol_error"){
+        card.append(el("p","sleep-copy",data.message||data.error||"模型输出未满足 Sleep 协议，需要修正。"));
+        if(data.received)technical(card,"收到的内容",data.received);
+      }else if(name==="model_error"){
+        card.append(el("p","sleep-copy",data.error||data.message||"模型调用失败，未形成可展示的步骤输出。"));
+      }else if(name==="group_decision"){
+        card.append(el("p","sleep-copy","校验后的分组决定；是否落库仍以数据库操作记录为准。"));
+        for(const action of Array.isArray(data.actions)?data.actions:[])actionCard(card,action,claims,"决定");
+      }else if(name==="action_start"){
+        const action=data.action||data.intent;if(action)actionCard(card,action,claims,"开始执行");
+        else card.append(el("p","sleep-copy","动作执行已开始。"));
+      }else if(name==="action_end"){
+        card.append(el("p","sleep-copy","执行器记录了动作完成；实际写入正文见下方数据库操作与回读。"));
+        if(data.action_type)addFact(card,"动作 "+actionName(data.action_type));
+        if(Array.isArray(data.target_memory_ids))addFact(card,data.target_memory_ids.length+" 条目标记忆");
+        if(data.target_memory_ids)technical(card,"目标记忆 ID",data.target_memory_ids);
+      }else if(key==="SEARCH"){
+        renderSearchEntry(card,{...data,claims});
+      }else if(key==="MEMORY_READ"){
+        renderMemoryReadEntry(card,data);
+      }else if(key==="EVIDENCE_READ"){
+        const request=asRecord(data.request),ids=data.evidence_ids||request.evidence_ids;
+        if(Array.isArray(ids))addFact(card,"读取 "+ids.length+" 条来源");if(ids)technical(card,"来源 ID",ids);
+        const result=data.results!==undefined?data.results:data.result;if(result!==undefined)renderEvidenceList(card,result);
+        else card.append(el("p","sleep-copy","记录了来源回读请求，结果详情未附在此事件中。"));
+      }else if(key==="MESSAGE_CONTEXT_READ"){
+        const result=asRecord(data.result),messages=Array.isArray(result.messages)?result.messages:[];
+        card.append(el("p","sleep-copy","读取同一聊天的来源前后文及回复目标，共 "+messages.length+" 条消息；读取本身不会保存整段聊天。"));
+        const status=asRecord(result.context_status);
+        if(status.core_window==="anchor_missing")card.append(el("p","sleep-notice","原聊天中的锚点已不可用，现有快照无法代表完整前后文。"));
+        renderEvidenceList(card,[{title:"实际读到的聊天",messages}]);technical(card,"完整聊天与读取状态",result);
+      }else if(name==="context_sources_saved"){
+        const ids=Array.isArray(data.message_ids)?data.message_ids:[];
+        card.append(el("p","sleep-copy","已为本次实际引用的 "+ids.length+" 条消息保存关联证据，包含必要回复目标。"));
+        technical(card,"已关联的来源与消息 ID",data);
+      }else if(name==="self_check"||name==="readback"){
+        card.classList.add("done");
+        if(data.memory_id)technical(card,"回读记忆 ID",data.memory_id);
+        if(data.evidence_count!==undefined)addFact(card,"核对 "+data.evidence_count+" 条来源");
+        if(data.result||data.memory||data.result_memories)renderMemoryReadEntry(card,data);
+        else if(Array.isArray(data.evidence)){renderEvidenceList(card,data.evidence);if(data.candidate_evidence_ids)technical(card,"候选来源 ID",data.candidate_evidence_ids)}
+        else card.append(el("p","sleep-copy","已记录执行后回读核对；正文以数据库操作的版本快照为准。"));
+      }else if(name==="recent_formal_memories"){
+        const memories=Array.isArray(data.memories)?data.memories:[];card.append(el("p","sleep-copy","本轮预读近期正式记忆："+memories.length+" 条。"));
+        for(const memory of memories.slice(0,8)){const item=asRecord(memory);card.append(el("p","sleep-copy",(item.title||"正式记忆")+(item.content?" · "+item.content:"")))}
+        if(memories.length>8)card.append(el("p","sleep-copy","另有 "+(memories.length-8)+" 条。"));
+      }else if(name==="session_start"||name==="group_start"){
+        const ids=data.candidate_ids||data.candidates;if(Array.isArray(ids))addCandidateFacts(card,ids,claims);
+        if(data.trigger_type)addFact(card,"触发方式 "+label(data.trigger_type));
+      }else if(name==="session_end"){
+        if(data.status)addFact(card,"状态 "+label(String(data.status).toUpperCase()));if(data.error||data.error_summary)card.append(el("p","sleep-copy",data.error||data.error_summary));
+      }else if(name==="PERSON_LOOKUP"){
+        const result=data.result||data.results;if(result!==undefined)card.append(el("p","sleep-copy",typeof result==="string"?result:"已回读人物资料。"));else card.append(el("p","sleep-copy","记录了人物资料查询。"));
+      }else{
+        const request=data.request||data.query||data.action;if(request)card.append(el("p","sleep-copy",typeof request==="string"?request:jsonText(request)));
+        const result=data.result||data.results;if(result!==undefined)card.append(el("p","sleep-copy","已记录工具结果。"));
+        technical(card,"事件数据",event?.data);
+      }
+      const candidateIds=data.candidate_ids;if(candidateIds&&!(["group_decision","action_start"].includes(name)))addCandidateFacts(card,candidateIds,claims);
+      parent.append(card);
+    }
+    function renderTrace(parent,x){
+      const area=section(parent,"Sleep 实际过程"),events=Array.isArray(x.trace_events)?x.trace_events:[];
+      if(x.trace_notice)area.append(el("p","sleep-notice",x.trace_notice));
+      else if(x.trace_available===false)area.append(el("p","sleep-notice","此会话没有可读取的实际对话记录；下方只展示数据库操作与版本回读，不会补造模型对话。"));
+      if(!events.length){area.append(el("div","trace-empty","没有已保存的过程事件。可在数据库操作与版本回读中查看实际执行结果。"));return}
+      const timeline=el("div","sleep-timeline");for(const event of events)renderTraceEvent(timeline,event,x.claims||[]);area.append(timeline);
+    }
+    function renderResultMemory(parent,memory){
+      const item=asRecord(memory),stale=item.is_current===false,card=el("article","sleep-memory"+(stale?" stale":"")),title=el("h4","",item.title||"已写入记忆");
+      const top=el("div","record-top");top.append(title);if(item.status)top.append(sleepStatus(item.status));card.append(top);
+      card.append(el("p","meta",item.revision_no?"本次版本 · 第 "+item.revision_no+" 版":"本次版本"));
+      if(item.revision_id)technical(card,"版本 ID",item.revision_id);
+      if(stale)card.append(el("p","sleep-notice","这是本次整理时的版本，当前记忆已更新。打开详情会查看当前记忆。"));
+      if(item.content)card.append(el("p","body",item.content));else card.append(el("p","sleep-copy","本次版本正文不可用。"));
+      if(item.memory_id){technical(card,"记忆 ID",item.memory_id);const open=el("button","memory-open","查看记忆详情");open.type="button";open.addEventListener("click",()=>go("memories",item.memory_id));card.append(open)}
+      parent.append(card);
+    }
+    function renderOperations(parent,x){
+      const area=section(parent,"数据库操作与版本回读"),operations=Array.isArray(x.operations)?x.operations:[];
+      if(!operations.length){area.append(el("p","empty","没有数据库操作记录。模型计划本身不代表执行成功。"));return}
+      for(const operation of operations){
+        const op=asRecord(operation),card=el("article","audit"),head=el("div","record-top"),intent=asRecord(op.intent),action=asRecord(intent.action||intent),memories=Array.isArray(op.result_memories)?op.result_memories:[];
+        head.append(el("strong","",actionName(op.action_type||action.action_type)+(memories[0]?.title?" · "+memories[0].title:"")),sleepStatus(op.status));card.append(head);
+        card.append(el("p","meta",date(op.created_at)+(op.updated_at?" · 更新于 "+date(op.updated_at):"")));
+        actionCard(card,action,x.claims||[],"数据库操作");
+        if(op.error)card.append(el("p","source-note",op.error));
+        if(memories.length){for(const memory of memories)renderResultMemory(card,memory)}
+        else if(["DEFER","IGNORE","RELATE"].includes(String(op.action_type||action.action_type||"").toUpperCase()))card.append(el("p","sleep-copy","此类操作没有创建或更新正式记忆正文。"));
+        else if(op.memory_readback_available===false)card.append(el("p","sleep-notice","本次记忆正文回读不可用；执行状态以数据库操作状态为准。"));
+        else if(op.memory_readback_available===true)card.append(el("p","sleep-copy","此操作没有关联到可展示的记忆正文版本。"));
+        else card.append(el("p","sleep-copy","接口未提供本次版本正文回读信息；不会用当前版本代替本次结果。"));
+        const result=op.result;if(result!==undefined)technical(card,"数据库结果字段",result);
+        const ids={};for(const key of ["operation_key","candidate_id"]){if(op[key]!==undefined)ids[key]=op[key]}
+        if(Object.keys(ids).length)technical(card,"操作技术 ID",ids);area.append(card);
+      }
+    }
+    function renderReadableSleep(target,x){
+      const info=section(target,"会话信息"),meta=el("p","meta","模型任务 "+(x.model_id||"未记录")+" · 提示版本 "+(x.prompt_version||"未知"));
+      info.append(meta);if(x.error_summary)info.append(el("p","source-note",x.error_summary));
+      technical(info,"会话技术信息",{sleep_session_id:x.sleep_session_id,started_at:x.started_at,finished_at:x.finished_at,trigger_type:x.trigger_type});
+      const claims=section(target,"候选认领");if(!Array.isArray(x.claims)||!x.claims.length)claims.append(el("p","empty","没有候选认领记录。"));
+      for(const claim of x.claims||[]){const card=el("article","audit"),top=el("div","record-top");top.append(el("strong","",claim.candidate_title||"候选记录"),sleepStatus(claim.outcome||"PROCESSING"));card.append(top,el("p","meta",date(claim.claimed_at)+(claim.released_at?" · 释放于 "+date(claim.released_at):"")));technical(card,"候选 ID",claim.candidate_id);claims.append(card)}
+      renderTrace(target,x);renderOperations(target,x);
+    }
+    function rawBlock(parent,title,value){
+      const area=section(parent,title),pre=el("pre","code",jsonText(value));area.append(pre);
+    }
+    function renderRawSleep(target,x){
+      const traceAvailable=x.trace_available===true,notice=x.trace_notice||(!traceAvailable?"此会话没有可读取的完整实际对话记录；原始视图不会补造模型输入或工具过程。":"");
+      if(notice)target.append(el("p","sleep-notice",notice));
+      rawBlock(target,"原始 Trace 事件",Array.isArray(x.trace_events)?x.trace_events:[]);
+      rawBlock(target,"数据库操作 JSON",Array.isArray(x.operations)?x.operations:[]);
+      rawBlock(target,"候选认领 JSON",Array.isArray(x.claims)?x.claims:[]);
+      rawBlock(target,"计划 JSON",Array.isArray(x.plans)?x.plans:[]);
+      rawBlock(target,"已提交动作 JSON",Array.isArray(x.actions)?x.actions:[]);
+    }
+    async function sleep(){
+      const p=split("Sleep 会话"),h=heading("Sleep sessions","Sleep 会话","查看每步检索、模型决定、实际操作和最终写入的记忆正文。");
+      const run=el("button","primary","整理新候选");run.type="button";run.title="只整理新聊天候选，旧积压继续保留。";
+      run.addEventListener("click",async()=>{run.disabled=true;run.textContent="正在查证与整理…";try{const result=await api("/engram-memory/api/sleep/run",{method:"POST",headers:{Accept:"application/json","Content-Type":"application/json"},body:"{}"});if(result.ran){state.id=result.sleep_session_id;await sleep()}else{run.disabled=false;run.textContent="整理新候选";message(p.right,"empty","当前没有可整理的新候选。")}}catch(e){run.disabled=false;run.textContent="整理新候选";message(p.right,"error",e.message)}});h.append(run);
+      const r=await api("/engram-memory/api/sleep?limit=60");p.list.replaceChildren();if(!r.items.length)message(p.list,"empty","尚无 Sleep 会话记录。");
+      for(const x of r.items)p.list.append(record(x,"sleep_session_id",label(x.trigger_type),x.candidate_count+" 条候选",[date(x.started_at),x.prompt_version],()=>{state.id=x.sleep_session_id;detailSleep(p.right,x.sleep_session_id)}));
+      root.replaceChildren(h,p.grid);if(state.id)detailSleep(p.right,state.id);
+    }
+    async function detailSleep(target,id){
+      message(target,"loading","正在读取会话审计…");
+      try{
+        const r=await api("/engram-memory/api/sleep/"+encodeURIComponent(id)),x=r.item;target.replaceChildren();
+        const head=el("div","detail-head");head.append(el("p","eyebrow","Sleep run"),el("h2","",label(x.trigger_type)));
+        const meta=el("div","meta");meta.append(sleepStatus(x.status),el("span","",date(x.started_at)),el("span","",x.candidate_count+" 条候选"));head.append(meta);target.append(head);
+        const toolbar=el("div","sleep-toolbar"),modeLabel=el("span","sleep-toolbar-label","详情显示方式"),group=el("div","sleep-mode");group.setAttribute("role","group");group.setAttribute("aria-label","Sleep 会话详情显示方式");
+        const content=el("div","sleep-content");
+        for(const [mode,text] of [["readable","可读"],["raw","原始"]]){
+          const button=el("button","",text);button.type="button";button.setAttribute("aria-pressed",String(state.sleepMode===mode));button.dataset.mode=mode;
+          button.addEventListener("click",()=>{state.sleepMode=button.dataset.mode;for(const option of group.querySelectorAll("button"))option.setAttribute("aria-pressed",String(option===button));content.replaceChildren();if(state.sleepMode==="raw")renderRawSleep(content,x);else renderReadableSleep(content,x)});group.append(button);
+        }
+        toolbar.append(modeLabel,group);target.append(toolbar,content);
+        if(state.sleepMode==="raw")renderRawSleep(content,x);else renderReadableSleep(content,x);
+      }catch(e){message(target,"error",e.message)}
+    }
+    async function personas(){
+      const h=heading("Person impressions","人物印象","读取核心数据库的人物印象；Sleep 在正式记忆整理后审查并更新。"),panel=el("section","panel"),grid=el("div","persona-grid");
+      panel.append(filter("按人物或印象内容查找",null),grid);
+      const r=await api("/engram-memory/api/personas?"+new URLSearchParams({q:state.q,limit:"100"}));if(!r.items.length)message(grid,"empty","没有已保存的人物印象。");
+      for(const x of r.items){const c=el("article","persona");c.append(el("p","eyebrow","人物印象"),el("h3","",x.display_name||"称呼未记录"),el("p","persona-id mono","核心 ID · "+x.person_id),el("p","body",x.impression));const m=el("p","meta","更新于 "+date(x.updated_at));if(x.last_sleep_session_id)m.append(el("span","mono"," · Sleep "+x.last_sleep_session_id));c.append(m);grid.append(c)}
+      root.replaceChildren(h,panel);
+    }
+    function go(view,selectedId=null){state.view=view;state.id=selectedId;state.q="";state.status=selectedId&&view==="memories"?"ALL":"";crumb.textContent=titles[view];for(const b of document.querySelectorAll(".nav"))b.setAttribute("aria-current",b.dataset.view===view?"page":"false");render()}
+    document.getElementById("refresh").addEventListener("click",render);
+    for(const b of document.querySelectorAll(".nav"))b.addEventListener("click",()=>go(b.dataset.view));
+    render();
+  </script>
 </body>
 </html>
