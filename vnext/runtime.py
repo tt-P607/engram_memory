@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
-from src.app.plugin_system.api import llm_api, person_api, stream_api
+from src.app.plugin_system.api import config_api, llm_api, person_api, stream_api
 from src.app.plugin_system.types import LLMPayload, Message, ModelSet, ROLE, Text
 
 from .domain import ParticipantInput, SubjectInput, VectorUpsert
@@ -180,11 +180,13 @@ DEFAULT_SLEEP_SYSTEM_PROMPT: str = (
 )
 DEFAULT_PERSONA_REVIEW_REQUEST_NAME: str = "engram_vnext_persona_review"
 DEFAULT_PERSONA_REVIEW_SYSTEM_PROMPT: str = (
-    "你负责复核一个人物的整体印象。印象是 Bot 第一人称的克制认识，不是记忆摘要。"
+    "你是当前 Bot，正在 Sleep 整理阶段复核自己对一位伙伴的整体印象。"
+    "使用下方 Bot 设定的身份、性格和表达风格，以自己的第一人称口吻写自然的主观认识。"
+    "人设决定观察和表达的视角，不替代记忆证据；不要套用固定模板或刻意堆砌人设标签。"
+    "人物印象不是记忆摘要或客观人格诊断，也不是给对方的聊天回复。"
     "正文用一至三句表达我对这位伙伴了解到了什么程度、哪些兴趣或相处方式有依据，"
     "哪些还不能判断；来源未明确性别时只称对方或这位伙伴。"
-    "例如只有少量兴趣交流时：我目前只熟悉这位伙伴谈过的一些兴趣话题，"
-    "对相处方式和长期倾向还需要更多了解。不要复述游戏、作品、生日、病情、请假"
+    "了解较少时如实限定认识的范围，不制造熟悉感。不要复述游戏、作品、生日、病情、请假"
     "等具体内容，这些已存在正式记忆中。少量发言不推断随和、自嘲、孩子气、亲近"
     "或常见交流风格；稳定倾向需要多次独立经历，不能靠一句了解有限掩饰无依据判断。"
     "仅依据与目标人物精确关联的正式记忆及 target_source_messages。source_limitation"
@@ -856,7 +858,9 @@ class _LLMJsonProducer:
         self.last_response_metadata: dict[str, object] | None = None
         self.last_correction: dict[str, object] | None = None
 
-    async def _complete_json(self, user_prompt: str, producer_name: str) -> list[object]:
+    async def _complete_json(
+        self, user_prompt: str, producer_name: str, *, system_context: str = "",
+    ) -> list[object]:
         """Send one non-streaming request and decode its JSON array response."""
         started_at = time.perf_counter()
         response: object | None = None
@@ -869,7 +873,10 @@ class _LLMJsonProducer:
                 model_set,
                 request_name=self._request_name,
             )
-            request.add_payload(LLMPayload(ROLE.SYSTEM, Text(self._system_prompt)))
+            system_prompt = self._system_prompt
+            if system_context:
+                system_prompt = f"{system_prompt}\n\n{system_context}"
+            request.add_payload(LLMPayload(ROLE.SYSTEM, Text(system_prompt)))
             request.add_payload(LLMPayload(ROLE.USER, Text(user_prompt)))
             send_result = request.send(stream=False)
             response: object = (
@@ -1220,7 +1227,7 @@ class PersonaReviewProducer(_LLMJsonProducer):
         *,
         request_name: str = DEFAULT_PERSONA_REVIEW_REQUEST_NAME,
         system_prompt: str = DEFAULT_PERSONA_REVIEW_SYSTEM_PROMPT,
-        prompt_version: str = "persona-review-v1",
+        prompt_version: str = "persona-review-v2-bot-persona",
         model_set: ModelSet | None = None,
         max_length: int = 500,
     ) -> None:
@@ -1243,6 +1250,16 @@ class PersonaReviewProducer(_LLMJsonProducer):
         """Produce one bounded Persona Review investigation or update step."""
         if not isinstance(review_payload, str) or not review_payload.strip():
             raise ValueError("review_payload 不能为空")
+        personality = config_api.get_core_config().personality
+        bot_persona = {
+            "nickname": personality.nickname,
+            "alias_names": personality.alias_names,
+            "personality_core": personality.personality_core,
+            "personality_side": personality.personality_side,
+            "identity": personality.identity,
+            "background_story": personality.background_story,
+            "reply_style": personality.reply_style,
+        }
         decoded = await self._complete_json(
             (
                 f"提示词版本：{self._prompt_version}\n"
@@ -1251,6 +1268,10 @@ class PersonaReviewProducer(_LLMJsonProducer):
                 f"人物印象审查数据：\n{review_payload.strip()}"
             ),
             "Persona Review",
+            system_context=(
+                "当前 Bot 设定（仅用于身份、主观视角与口吻；仍按上面的审查职责和 JSON 协议输出）：\n"
+                + json.dumps(bot_persona, ensure_ascii=False)
+            ),
         )
         if not decoded:
             return None

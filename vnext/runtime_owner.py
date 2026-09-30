@@ -204,7 +204,7 @@ class VNextRuntimeOwner:
             prompt_version="sleep-agent-v3-balanced",
         )
         self.persona_producer = PersonaReviewProducer(
-            prompt_version="persona-review-v1",
+            prompt_version="persona-review-v2-bot-persona",
             max_length=vnext.persona.max_length,
         )
         self.runtime_adapter = VNextRuntimeAdapter(
@@ -952,7 +952,7 @@ class VNextRuntimeOwner:
                 result = await self.sleep_service.start_session(
                     SleepSessionInput(
                         SleepTriggerType.DAILY, self.config.internal_llm.task_name,
-                        "persona-review-v1",
+                        "persona-review-v2-bot-persona",
                     ), (),
                 )
                 self.sleep_agent.last_session_id = result.sleep_session_id
@@ -1237,8 +1237,8 @@ class VNextRuntimeOwner:
                         "提交前逐句对照 target_source_messages：具体经历是否属于目标本人，"
                         "是否误读 Bot 建议或未完成计划；稳定风格、亲近关系和性格是否真的"
                         "有多个独立经历，而非旧画像或同一天的零散发言；性别是否确认。"
-                        "删除无依据的随和、自嘲、孩子气、鲜活亲近等概括。正文须是克制的"
-                        "第一人称整体认识，不复述生日、身体不适、请假或作品剧情等流水。"
+                        "删除无依据的随和、自嘲、孩子气、鲜活亲近等概括。正文须以当前 Bot 人设和"
+                        "自己的第一人称口吻表达整体认识，不复述生日、身体不适、请假或作品剧情等流水。"
                         "UPDATE 拟稿无误也须返回最终完整 UPDATE；KEEP 只代表原印象无需修正。"
                     )
                     self._record_sleep_trace("persona_final_check", {
