@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import uuid4
@@ -19,9 +20,9 @@ from .domain import (
     ReviseMemoryInput,
     WriteContext,
 )
+from .evidence_service import EvidenceService
 from .enums import (
     ActorType,
-    EvidenceRole,
     MemoryEventType,
     MemoryStatus,
     OutboxObjectType,
@@ -31,10 +32,9 @@ from .enums import (
     RevisionChangeReason,
 )
 from .models import (
+    DomainOperationModel,
     EvidenceMessageLinkModel,
     EvidenceModel,
-    MemoryAssessmentModel,
-    DomainOperationModel,
     MemoryEventModel,
     MemoryModel,
     MemoryRetrievalEntryModel,
@@ -46,7 +46,7 @@ from .models import (
 )
 from .schema import VNextSchema
 
-RETRIEVAL_GENERATOR_VERSION = "vnext-1"
+RETRIEVAL_GENERATOR_VERSION = "vnext-2"
 
 
 def _new_id() -> str:
@@ -68,6 +68,13 @@ class MemoryService:
             raise ValueError("embedding_model_id 不能为空")
         self._schema = schema
         self._embedding_model_id = embedding_model_id
+        self._evidence_service = EvidenceService(schema)
+
+    async def prepare_evidence(
+        self, evidence: tuple[EvidenceInput, ...]
+    ) -> tuple[EvidenceInput, ...]:
+        """在开启 Canonical Transaction 前补齐新来源快照。"""
+        return await self._evidence_service.prepare_evidence(evidence)
 
     @staticmethod
     async def _claim_domain_operation(
@@ -145,7 +152,6 @@ class MemoryService:
         return MemoryWriteResult(
             memory_id=event.memory_id,
             revision_id=event.revision_id or str(payload["revision_id"]),
-            assessment_id=str(payload["assessment_id"]),
             evidence_ids=tuple(str(item) for item in payload.get("evidence_ids", ())),
         )
 
@@ -156,18 +162,15 @@ class MemoryService:
     ) -> MemoryWriteResult:
         """在一个 Canonical Transaction 中创建完整正式记忆。"""
         data.validate()
+        data = replace(data, evidence=await self.prepare_evidence(data.evidence))
         now = datetime.now(UTC)
         memory_id = _new_id()
         revision_id = _new_id()
-        assessment_id = _new_id()
-        new_evidence_ids = tuple(_new_id() for _ in data.evidence)
 
         memory = MemoryModel(
             memory_id=memory_id,
             status=MemoryStatus.ACTIVE,
-            anchor_title=data.anchor_title,
             current_revision_id=revision_id,
-            current_assessment_id=assessment_id,
             created_at=now,
             created_by_type=context.actor_type,
             last_experienced_at=data.observed_at,
@@ -181,13 +184,7 @@ class MemoryService:
             title=data.title,
             content=data.content,
             memory_kind=data.memory_kind,
-            confidence=data.confidence,
-            confidence_reason=data.confidence_reason,
             observed_at=data.observed_at,
-            event_start_at=data.event_start_at,
-            event_end_at=data.event_end_at,
-            event_time_precision=data.event_time_precision,
-            event_time_origin=data.event_time_origin,
             change_reason=RevisionChangeReason.INITIAL,
             created_at=now,
             created_by_type=context.actor_type,
@@ -200,17 +197,6 @@ class MemoryService:
             subject_key=data.subject.subject_key,
             subject_label=data.subject.subject_label,
         )
-        assessment = MemoryAssessmentModel(
-            assessment_id=assessment_id,
-            memory_id=memory_id,
-            based_on_revision_id=revision_id,
-            stability=data.stability,
-            salience=data.salience,
-            reason=data.assessment_reason,
-            created_at=now,
-            created_by_type=context.actor_type,
-        )
-
         async with self._schema.database.session() as session:
             await session.execute(text("PRAGMA defer_foreign_keys = ON"))
             existing_result = await self._claim_domain_operation(
@@ -220,26 +206,9 @@ class MemoryService:
                 return MemoryWriteResult(
                     memory_id=str(existing_result["memory_id"]),
                     revision_id=str(existing_result["revision_id"]),
-                    assessment_id=str(existing_result["assessment_id"]),
                     evidence_ids=tuple(str(item) for item in existing_result.get("evidence_ids", ())),
                 )
-            session.add_all([memory, revision, subject, assessment])
-            existing_evidence_rows = tuple(
-                (
-                    await session.scalars(
-                        select(EvidenceModel).where(
-                            EvidenceModel.evidence_id.in_(data.evidence_ids)
-                        )
-                    )
-                ).all()
-            )
-            if len(existing_evidence_rows) != len(data.evidence_ids):
-                raise ValueError("存在无效 evidence_id")
-            evidence_ids = new_evidence_ids + data.evidence_ids
-            evidence_roles = {
-                evidence_id: evidence.evidence_role
-                for evidence_id, evidence in zip(new_evidence_ids, data.evidence, strict=True)
-            }
+            session.add_all([memory, revision, subject])
             for participant in data.participants:
                 session.add(
                     MemoryRevisionParticipantModel(
@@ -248,52 +217,14 @@ class MemoryService:
                         participant_kind=participant.participant_kind,
                         person_id=participant.person_id,
                         label=participant.label,
-                        role=participant.role,
                     )
                 )
-            for evidence_id, evidence in zip(
-                new_evidence_ids,
-                data.evidence,
-                strict=True,
-            ):
-                session.add(
-                    EvidenceModel(
-                        evidence_id=evidence_id,
-                        source_type=evidence.source_type,
-                        claim_basis=evidence.claim_basis,
-                        provenance_quality=evidence.provenance_quality,
-                        observed_at=evidence.observed_at,
-                        source_ref=evidence.source_ref,
-                        note=evidence.note,
-                        created_at=now,
-                    )
-                )
-                for ordinal, message in enumerate(evidence.messages):
-                    session.add(
-                        EvidenceMessageLinkModel(
-                            evidence_id=evidence_id,
-                            message_id=message.message_id,
-                            stream_id=message.stream_id,
-                            ordinal=ordinal,
-                        )
-                    )
-            for evidence_id in evidence_ids:
-                session.add(
-                    RevisionEvidenceModel(
-                        revision_id=revision_id,
-                        evidence_id=evidence_id,
-                        evidence_role=evidence_roles.get(evidence_id, EvidenceRole.SUPPORT),
-                        linked_at=now,
-                    )
-                )
-
-            self._add_retrieval_entry(
+            evidence_ids, _ = await self._attach_evidence(
                 session=session,
-                memory_id=memory_id,
-                revision_id=None,
-                entry_type=RetrievalEntryType.ANCHOR,
-                text=data.anchor_title,
-                created_at=now,
+                revision_id=revision_id,
+                evidence=data.evidence,
+                existing_evidence_ids=data.evidence_ids,
+                now=now,
             )
             self._add_retrieval_entry(
                 session=session,
@@ -316,7 +247,6 @@ class MemoryService:
                     payload_json={
                         "evidence_ids": list(evidence_ids),
                         "revision_id": revision_id,
-                        "assessment_id": assessment_id,
                         "operation_key": context.operation_key,
                     },
                 )
@@ -327,7 +257,6 @@ class MemoryService:
                 {
                     "memory_id": memory_id,
                     "revision_id": revision_id,
-                    "assessment_id": assessment_id,
                     "evidence_ids": list(evidence_ids),
                 },
             )
@@ -335,7 +264,6 @@ class MemoryService:
         return MemoryWriteResult(
             memory_id=memory_id,
             revision_id=revision_id,
-            assessment_id=assessment_id,
             evidence_ids=evidence_ids,
         )
 
@@ -353,14 +281,10 @@ class MemoryService:
         now = datetime.now(UTC)
         memory_id = _new_id()
         revision_id = _new_id()
-        assessment_id = _new_id()
-        new_evidence_ids = tuple(_new_id() for _ in data.evidence)
         memory = MemoryModel(
             memory_id=memory_id,
             status=MemoryStatus.ACTIVE,
-            anchor_title=data.anchor_title,
             current_revision_id=revision_id,
-            current_assessment_id=assessment_id,
             created_at=now,
             created_by_type=context.actor_type,
             last_experienced_at=data.observed_at,
@@ -374,13 +298,7 @@ class MemoryService:
             title=data.title,
             content=data.content,
             memory_kind=data.memory_kind,
-            confidence=data.confidence,
-            confidence_reason=data.confidence_reason,
             observed_at=data.observed_at,
-            event_start_at=data.event_start_at,
-            event_end_at=data.event_end_at,
-            event_time_precision=data.event_time_precision,
-            event_time_origin=data.event_time_origin,
             change_reason=RevisionChangeReason.INITIAL,
             created_at=now,
             created_by_type=context.actor_type,
@@ -393,16 +311,6 @@ class MemoryService:
             subject_key=data.subject.subject_key,
             subject_label=data.subject.subject_label,
         )
-        assessment = MemoryAssessmentModel(
-            assessment_id=assessment_id,
-            memory_id=memory_id,
-            based_on_revision_id=revision_id,
-            stability=data.stability,
-            salience=data.salience,
-            reason=data.assessment_reason,
-            created_at=now,
-            created_by_type=context.actor_type,
-        )
         await session.execute(text("PRAGMA defer_foreign_keys = ON"))
         existing_result = await self._claim_domain_operation(
             session, context.operation_key, "CREATE"
@@ -411,28 +319,11 @@ class MemoryService:
             return MemoryWriteResult(
                 memory_id=str(existing_result["memory_id"]),
                 revision_id=str(existing_result["revision_id"]),
-                assessment_id=str(existing_result["assessment_id"]),
                 evidence_ids=tuple(
                     str(item) for item in existing_result.get("evidence_ids", ())
                 ),
             )
-        session.add_all([memory, revision, subject, assessment])
-        existing_evidence_rows = tuple(
-            (
-                await session.scalars(
-                    select(EvidenceModel).where(
-                        EvidenceModel.evidence_id.in_(data.evidence_ids)
-                    )
-                )
-            ).all()
-        )
-        if len(existing_evidence_rows) != len(data.evidence_ids):
-            raise ValueError("存在无效 evidence_id")
-        evidence_ids = new_evidence_ids + data.evidence_ids
-        evidence_roles = {
-            evidence_id: evidence.evidence_role
-            for evidence_id, evidence in zip(new_evidence_ids, data.evidence, strict=True)
-        }
+        session.add_all([memory, revision, subject])
         for participant in data.participants:
             session.add(
                 MemoryRevisionParticipantModel(
@@ -441,47 +332,14 @@ class MemoryService:
                     participant_kind=participant.participant_kind,
                     person_id=participant.person_id,
                     label=participant.label,
-                    role=participant.role,
                 )
             )
-        for evidence_id, evidence in zip(new_evidence_ids, data.evidence, strict=True):
-            session.add(
-                EvidenceModel(
-                    evidence_id=evidence_id,
-                    source_type=evidence.source_type,
-                    claim_basis=evidence.claim_basis,
-                    provenance_quality=evidence.provenance_quality,
-                    observed_at=evidence.observed_at,
-                    source_ref=evidence.source_ref,
-                    note=evidence.note,
-                    created_at=now,
-                )
-            )
-            for ordinal, message in enumerate(evidence.messages):
-                session.add(
-                    EvidenceMessageLinkModel(
-                        evidence_id=evidence_id,
-                        message_id=message.message_id,
-                        stream_id=message.stream_id,
-                        ordinal=ordinal,
-                    )
-                )
-        for evidence_id in evidence_ids:
-            session.add(
-                RevisionEvidenceModel(
-                    revision_id=revision_id,
-                    evidence_id=evidence_id,
-                    evidence_role=evidence_roles.get(evidence_id, EvidenceRole.SUPPORT),
-                    linked_at=now,
-                )
-            )
-        self._add_retrieval_entry(
+        evidence_ids, _ = await self._attach_evidence(
             session=session,
-            memory_id=memory_id,
-            revision_id=None,
-            entry_type=RetrievalEntryType.ANCHOR,
-            text=data.anchor_title,
-            created_at=now,
+            revision_id=revision_id,
+            evidence=data.evidence,
+            existing_evidence_ids=data.evidence_ids,
+            now=now,
         )
         self._add_retrieval_entry(
             session=session,
@@ -504,7 +362,6 @@ class MemoryService:
                 payload_json={
                     "evidence_ids": list(evidence_ids),
                     "revision_id": revision_id,
-                    "assessment_id": assessment_id,
                     "operation_key": context.operation_key,
                 },
             )
@@ -515,14 +372,12 @@ class MemoryService:
             {
                 "memory_id": memory_id,
                 "revision_id": revision_id,
-                "assessment_id": assessment_id,
                 "evidence_ids": list(evidence_ids),
             },
         )
         return MemoryWriteResult(
             memory_id=memory_id,
             revision_id=revision_id,
-            assessment_id=assessment_id,
             evidence_ids=evidence_ids,
         )
 
@@ -531,8 +386,9 @@ class MemoryService:
         data: ReinforceMemoryInput,
         context: WriteContext,
     ) -> MemoryWriteResult:
-        """追加支持证据，可选追加评估，但不创建语义 Revision。"""
+        """追加支持证据，但不创建语义 Revision。"""
         data.validate()
+        data = replace(data, evidence=await self.prepare_evidence(data.evidence))
         now = datetime.now(UTC)
         async with self._schema.database.session() as session:
             await session.execute(text("PRAGMA defer_foreign_keys = ON"))
@@ -543,7 +399,6 @@ class MemoryService:
                 return MemoryWriteResult(
                     memory_id=str(existing_result["memory_id"]),
                     revision_id=str(existing_result["revision_id"]),
-                    assessment_id=str(existing_result["assessment_id"]),
                     evidence_ids=tuple(
                         str(item) for item in existing_result.get("evidence_ids", ())
                     ),
@@ -570,22 +425,6 @@ class MemoryService:
                 existing_evidence_ids=data.evidence_ids,
                 now=now,
             )
-            assessment_id = memory.current_assessment_id
-            if data.assessment is not None:
-                assessment_id = _new_id()
-                session.add(
-                    MemoryAssessmentModel(
-                        assessment_id=assessment_id,
-                        memory_id=memory.memory_id,
-                        based_on_revision_id=memory.current_revision_id,
-                        stability=data.assessment.stability,
-                        salience=data.assessment.salience,
-                        reason=data.assessment.reason,
-                        created_at=now,
-                        created_by_type=context.actor_type,
-                    )
-                )
-                memory.current_assessment_id = assessment_id
             memory.last_experienced_at = max(memory.last_experienced_at, experienced_at)
             memory.updated_at = now
             session.add(
@@ -601,7 +440,6 @@ class MemoryService:
                     payload_json={
                         "reason": data.reason,
                         "evidence_ids": list(evidence_ids),
-                        "assessment_id": assessment_id,
                         "operation_key": context.operation_key,
                     },
                 )
@@ -612,14 +450,12 @@ class MemoryService:
                 {
                     "memory_id": data.memory_id,
                     "revision_id": data.based_on_revision_id,
-                    "assessment_id": assessment_id,
                     "evidence_ids": list(evidence_ids),
                 },
             )
         return MemoryWriteResult(
             memory_id=data.memory_id,
             revision_id=data.based_on_revision_id,
-            assessment_id=assessment_id,
             evidence_ids=evidence_ids,
         )
 
@@ -630,9 +466,9 @@ class MemoryService:
     ) -> MemoryWriteResult:
         """基于当前版本创建线性 Revision N+1 并切换当前指针。"""
         data.validate()
+        data = replace(data, evidence=await self.prepare_evidence(data.evidence))
         now = datetime.now(UTC)
         revision_id = _new_id()
-        assessment_id = _new_id()
         async with self._schema.database.session() as session:
             await session.execute(text("PRAGMA defer_foreign_keys = ON"))
             existing_result = await self._claim_domain_operation(
@@ -642,7 +478,6 @@ class MemoryService:
                 return MemoryWriteResult(
                     memory_id=str(existing_result["memory_id"]),
                     revision_id=str(existing_result["revision_id"]),
-                    assessment_id=str(existing_result["assessment_id"]),
                     evidence_ids=tuple(
                         str(item) for item in existing_result.get("evidence_ids", ())
                     ),
@@ -656,7 +491,6 @@ class MemoryService:
                 )
                 .values(
                     current_revision_id=revision_id,
-                    current_assessment_id=assessment_id,
                     updated_at=now,
                 )
                 .execution_options(synchronize_session=False)
@@ -691,13 +525,7 @@ class MemoryService:
                     title=data.title,
                     content=data.content,
                     memory_kind=data.memory_kind,
-                    confidence=data.confidence,
-                    confidence_reason=data.confidence_reason,
                     observed_at=data.observed_at,
-                    event_start_at=data.event_start_at,
-                    event_end_at=data.event_end_at,
-                    event_time_precision=data.event_time_precision,
-                    event_time_origin=data.event_time_origin,
                     change_reason=data.change_reason,
                     created_at=now,
                     created_by_type=context.actor_type,
@@ -721,7 +549,6 @@ class MemoryService:
                         participant_kind=participant.participant_kind,
                         person_id=participant.person_id,
                         label=participant.label,
-                        role=participant.role,
                     )
                 )
             evidence_ids, experienced_at = await self._attach_evidence(
@@ -730,18 +557,6 @@ class MemoryService:
                 evidence=data.evidence,
                 existing_evidence_ids=data.evidence_ids,
                 now=now,
-            )
-            session.add(
-                MemoryAssessmentModel(
-                    assessment_id=assessment_id,
-                    memory_id=memory.memory_id,
-                    based_on_revision_id=revision_id,
-                    stability=data.assessment.stability,
-                    salience=data.assessment.salience,
-                    reason=data.assessment.reason,
-                    created_at=now,
-                    created_by_type=context.actor_type,
-                )
             )
             await self._demote_current_retrieval_entry(session, memory.memory_id, now)
             self._add_retrieval_entry(
@@ -752,28 +567,6 @@ class MemoryService:
                 text=f"{data.title}\n{data.content}",
                 created_at=now,
             )
-            old_anchor_title = memory.anchor_title
-            if data.new_anchor_title is not None and data.new_anchor_title != old_anchor_title:
-                memory.anchor_title = data.new_anchor_title
-                await self._replace_anchor_entry(
-                    session,
-                    memory.memory_id,
-                    data.new_anchor_title,
-                    now,
-                )
-                session.add(
-                    MemoryEventModel(
-                        event_id=_new_id(),
-                        memory_id=memory.memory_id,
-                        revision_id=revision_id,
-                        event_type=MemoryEventType.ANCHOR_CHANGED,
-                        actor_type=context.actor_type,
-                        actor_ref=context.actor_ref,
-                        stream_id=context.stream_id,
-                        occurred_at=now,
-                        payload_json={"old": old_anchor_title, "new": data.new_anchor_title},
-                    )
-                )
             await session.execute(
                 update(MemoryModel)
                 .where(
@@ -798,7 +591,6 @@ class MemoryService:
                     occurred_at=now,
                     payload_json={
                         "change_reason": data.change_reason.value,
-                        "assessment_id": assessment_id,
                         "evidence_ids": list(evidence_ids),
                         "operation_key": context.operation_key,
                     },
@@ -810,14 +602,12 @@ class MemoryService:
                 {
                     "memory_id": data.memory_id,
                     "revision_id": revision_id,
-                    "assessment_id": assessment_id,
                     "evidence_ids": list(evidence_ids),
                 },
             )
         return MemoryWriteResult(
             memory_id=data.memory_id,
             revision_id=revision_id,
-            assessment_id=assessment_id,
             evidence_ids=evidence_ids,
         )
 
@@ -987,8 +777,6 @@ class MemoryService:
                 EvidenceModel(
                     evidence_id=evidence_id,
                     source_type=item.source_type,
-                    claim_basis=item.claim_basis,
-                    provenance_quality=item.provenance_quality,
                     observed_at=item.observed_at,
                     source_ref=item.source_ref,
                     note=item.note,
@@ -997,6 +785,8 @@ class MemoryService:
             )
         await session.flush()
 
+        messages = tuple(message for item in evidence for message in item.messages)
+        await self._evidence_service.persist_snapshots(session, messages)
         for evidence_id, item in zip(new_ids, evidence, strict=True):
             for ordinal, message in enumerate(item.messages):
                 session.add(
@@ -1010,19 +800,23 @@ class MemoryService:
                 await session.flush()
 
         all_ids = new_ids + existing_evidence_ids
-        role_by_id = {
-            evidence_id: item.evidence_role
-            for evidence_id, item in zip(new_ids, evidence, strict=True)
-        }
+        linked_ids = set((await session.scalars(
+            select(RevisionEvidenceModel.evidence_id).where(
+                RevisionEvidenceModel.revision_id == revision_id,
+                RevisionEvidenceModel.evidence_id.in_(all_ids),
+            )
+        )).all())
         for evidence_id in all_ids:
+            if evidence_id in linked_ids:
+                continue
             session.add(
                 RevisionEvidenceModel(
                     revision_id=revision_id,
                     evidence_id=evidence_id,
-                    evidence_role=role_by_id.get(evidence_id, EvidenceRole.SUPPORT),
                     linked_at=now,
                 )
             )
+            linked_ids.add(evidence_id)
         await session.flush()
         observed_times = [item.observed_at for item in evidence]
         observed_times.extend(item.observed_at for item in existing_rows)
@@ -1043,25 +837,6 @@ class MemoryService:
         if entry is None:
             raise ValueError("当前 Revision Retrieval Entry 不存在")
         entry.entry_type = RetrievalEntryType.HISTORICAL_REVISION
-        self._add_outbox(session, entry.entry_id, entry.content_hash, now)
-
-    async def _replace_anchor_entry(
-        self,
-        session: AsyncSession,
-        memory_id: str,
-        text_value: str,
-        now: datetime,
-    ) -> None:
-        """更新稳定锚点派生入口并重新排队。"""
-        statement = select(MemoryRetrievalEntryModel).where(
-            MemoryRetrievalEntryModel.memory_id == memory_id,
-            MemoryRetrievalEntryModel.entry_type == RetrievalEntryType.ANCHOR,
-        )
-        entry = (await session.scalars(statement)).one_or_none()
-        if entry is None:
-            raise ValueError("Anchor Retrieval Entry 不存在")
-        entry.text = text_value
-        entry.content_hash = _content_hash(text_value)
         self._add_outbox(session, entry.entry_id, entry.content_hash, now)
 
     def _add_retrieval_entry(

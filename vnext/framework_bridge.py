@@ -8,17 +8,18 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, cast
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import and_, desc, or_, select, text
 
 from src.core.models.sql_alchemy import ChatStreams, Messages, PersonInfo
 from src.core.prompt.system_reminder import get_system_reminder_store
 from src.kernel.concurrency import get_task_manager
-from src.kernel.db import QueryBuilder, get_db_session
+from src.kernel.db import get_db_session
 from src.kernel.scheduler import TriggerType, get_unified_scheduler
 from src.kernel.vector_db import get_vector_db_service
 
@@ -46,6 +47,7 @@ class MessageSnapshot:
     message_type: str | None
     content: str
     processed_plain_text: str
+    reply_to: str | None
 
     def to_dict(self) -> dict[str, object]:
         """返回不含 ORM 或 Session 的普通字典。"""
@@ -61,6 +63,7 @@ class MessageSnapshot:
             "message_type": self.message_type,
             "content": self.content,
             "processed_plain_text": self.processed_plain_text,
+            "reply_to": self.reply_to,
         }
 
 
@@ -102,6 +105,19 @@ async def _set_transaction_read_only(session: Any) -> None:
         raise RuntimeError(f"Migration Resolver 不支持数据库方言: {dialect_name}")
 
 
+@asynccontextmanager
+async def _read_only_db_session() -> AsyncIterator[Any]:
+    """为单次来源查询启用只读事务，并复位 SQLite 连接级开关。"""
+    async with get_db_session() as session:
+        is_sqlite = str(session.get_bind().dialect.name) == "sqlite"
+        await _set_transaction_read_only(session)
+        try:
+            yield session
+        finally:
+            if is_sqlite:
+                await session.execute(text("PRAGMA query_only=OFF"))
+
+
 async def read_migration_person_candidates(
     source_ref: str,
 ) -> tuple[MigrationPersonCandidate, ...]:
@@ -116,8 +132,7 @@ async def read_migration_person_candidates(
             conditions.append(
                 (PersonInfo.platform == platform) & (PersonInfo.user_id == user_id)
             )
-    async with get_db_session() as session:
-        await _set_transaction_read_only(session)
+    async with _read_only_db_session() as session:
         result = await session.execute(select(PersonInfo).where(or_(*conditions)))
         rows = result.scalars().all()
         return tuple(
@@ -146,8 +161,7 @@ async def read_migration_stream_candidates(
     )
     if not normalized and not has_window:
         return ()
-    async with get_db_session() as session:
-        await _set_transaction_read_only(session)
+    async with _read_only_db_session() as session:
         if normalized:
             result = await session.execute(
                 select(ChatStreams.stream_id).where(ChatStreams.stream_id == normalized)
@@ -205,8 +219,7 @@ async def read_migration_message_candidates(
     if person_id:
         statement = statement.where(Messages.person_id == person_id)
     statement = statement.order_by(Messages.time.asc(), Messages.id.asc()).limit(limit)
-    async with get_db_session() as session:
-        await _set_transaction_read_only(session)
+    async with _read_only_db_session() as session:
         result = await session.execute(statement)
         return tuple(
             MigrationMessageCandidate(
@@ -328,6 +341,70 @@ def get_vector_database(db_path: str) -> VectorDatabase:
     return cast(VectorDatabase, get_vector_db_service(db_path))
 
 
+async def _message_snapshots_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[MessageSnapshot, ...]:
+    """将只读消息行转换为包含原始人物元数据的快照。"""
+    person_ids = tuple(
+        dict.fromkeys(
+            str(row.get("person_id") or "").strip()
+            for row in rows
+            if str(row.get("person_id") or "").strip()
+        )
+    )
+    people: dict[str, Mapping[str, Any]] = {}
+    if person_ids:
+        async with _read_only_db_session() as session:
+            person_rows = [
+                dict(row)
+                for row in (
+                    await session.execute(
+                        select(PersonInfo.__table__).where(
+                            PersonInfo.person_id.in_(person_ids)
+                        )
+                    )
+                ).mappings().all()
+            ]
+        people = {
+            str(row.get("person_id") or ""): row
+            for row in person_rows
+            if str(row.get("person_id") or "").strip()
+        }
+
+    snapshots: list[MessageSnapshot] = []
+    for row in rows:
+        message_id = str(row.get("message_id") or "").strip()
+        if not message_id:
+            continue
+        stream_id = str(row.get("stream_id") or "").strip()
+        person_id = str(row.get("person_id") or "").strip() or None
+        person = people.get(person_id or "", {})
+        sender_id = str(person.get("user_id") or person_id or "").strip() or None
+        snapshots.append(
+            MessageSnapshot(
+                message_id=message_id,
+                stream_id=stream_id,
+                time=row.get("time"),
+                sender_id=sender_id,
+                sender_name=(
+                    str(person.get("nickname") or "").strip()
+                    or str(row.get("sender_name") or "").strip()
+                    or sender_id
+                ),
+                sender_cardname=str(person.get("cardname") or "").strip() or None,
+                person_id=person_id,
+                platform=str(row.get("platform") or "").strip() or None,
+                message_type=str(row.get("message_type") or "").strip() or None,
+                content=str(row.get("content") or ""),
+                processed_plain_text=str(
+                    row.get("processed_plain_text") or row.get("content") or ""
+                ),
+                reply_to=str(row.get("reply_to") or "").strip() or None,
+            )
+        )
+    return tuple(snapshots)
+
+
 async def read_message_snapshots(
     message_refs: Sequence[tuple[str, str]],
 ) -> tuple[MessageSnapshot, ...]:
@@ -346,62 +423,20 @@ async def read_message_snapshots(
     if not normalized_refs:
         return ()
     message_ids = tuple(dict.fromkeys(message_id for _, message_id in normalized_refs))
-    rows = cast(
-        list[dict[str, Any]],
-        await QueryBuilder(Messages)
-        .filter(message_id__in=list(message_ids))
-        .all(as_dict=True),
-    )
-    person_ids = tuple(
-        dict.fromkeys(
-            str(row.get("person_id") or "").strip()
-            for row in rows
-            if str(row.get("person_id") or "").strip()
-        )
-    )
-    people: dict[str, Mapping[str, Any]] = {}
-    if person_ids:
-        person_rows = cast(
-            list[dict[str, Any]],
-            await QueryBuilder(PersonInfo)
-            .filter(person_id__in=list(person_ids))
-            .all(as_dict=True),
-        )
-        people = {
-            str(row.get("person_id") or ""): row
-            for row in person_rows
-            if str(row.get("person_id") or "").strip()
-        }
-
+    async with _read_only_db_session() as session:
+        rows = [
+            dict(row)
+            for row in (
+                await session.execute(
+                    select(Messages.__table__).where(Messages.message_id.in_(message_ids))
+                )
+            ).mappings().all()
+        ]
     exact: dict[tuple[str, str], MessageSnapshot] = {}
     by_id: dict[str, list[MessageSnapshot]] = {}
-    for row in rows:
-        message_id = str(row.get("message_id") or "").strip()
-        if not message_id:
-            continue
-        stream_id = str(row.get("stream_id") or "").strip()
-        person_id = str(row.get("person_id") or "").strip() or None
-        person = people.get(person_id or "", {})
-        sender_id = str(person.get("user_id") or person_id or "").strip() or None
-        snapshot = MessageSnapshot(
-            message_id=message_id,
-            stream_id=stream_id,
-            time=row.get("time"),
-            sender_id=sender_id,
-            sender_name=(
-                str(person.get("nickname") or "").strip()
-                or str(row.get("sender_name") or "").strip()
-                or sender_id
-            ),
-            sender_cardname=str(person.get("cardname") or "").strip() or None,
-            person_id=person_id,
-            platform=str(row.get("platform") or "").strip() or None,
-            message_type=str(row.get("message_type") or "").strip() or None,
-            content=str(row.get("content") or ""),
-            processed_plain_text=str(
-                row.get("processed_plain_text") or row.get("content") or ""
-            ),
-        )
+    for snapshot in await _message_snapshots_from_rows(rows):
+        message_id = snapshot.message_id
+        stream_id = snapshot.stream_id
         exact[(stream_id, message_id)] = snapshot
         by_id.setdefault(message_id, []).append(snapshot)
 
@@ -414,6 +449,101 @@ async def read_message_snapshots(
         if snapshot is not None:
             ordered.append(snapshot)
     return tuple(ordered)
+
+
+async def read_message_context_snapshots(
+    stream_id: str,
+    anchor_message_id: str,
+    before: int,
+    after: int,
+    *,
+    reply_to_message_id: str | None = None,
+    use_core_reply_to: bool = True,
+) -> tuple[MessageSnapshot, ...]:
+    """读取 anchor 的同流窗口及可获取的回复目标，按核心顺序返回。"""
+    if before < 0 or after < 0:
+        raise ValueError("上下文数量不能为负数")
+    if not stream_id.strip() or not anchor_message_id.strip():
+        raise ValueError("上下文查询必须指定 stream_id 与 anchor_message_id")
+
+    async with _read_only_db_session() as session:
+        anchor = (
+            await session.execute(
+                select(Messages.__table__).where(
+                    Messages.stream_id == stream_id,
+                    Messages.message_id == anchor_message_id,
+                )
+            )
+        ).mappings().first()
+        if anchor is None:
+            return ()
+
+        anchor_time = float(anchor["time"])
+        anchor_row_id = int(anchor["id"])
+        rows: list[dict[str, Any]] = [dict(anchor)]
+        if before:
+            earlier = [
+                dict(row)
+                for row in (
+                    await session.execute(
+                        select(Messages.__table__)
+                        .where(
+                            Messages.stream_id == stream_id,
+                            or_(
+                                Messages.time < anchor_time,
+                                and_(
+                                    Messages.time == anchor_time,
+                                    Messages.id < anchor_row_id,
+                                ),
+                            ),
+                        )
+                        .order_by(desc(Messages.time), desc(Messages.id))
+                        .limit(before)
+                    )
+                ).mappings().all()
+            ]
+            rows.extend(reversed(earlier))
+        if after:
+            rows.extend(
+                dict(row)
+                for row in (
+                    await session.execute(
+                        select(Messages.__table__)
+                        .where(
+                            Messages.stream_id == stream_id,
+                            or_(
+                                Messages.time > anchor_time,
+                                and_(
+                                    Messages.time == anchor_time,
+                                    Messages.id > anchor_row_id,
+                                ),
+                            ),
+                        )
+                        .order_by(Messages.time, Messages.id)
+                        .limit(after)
+                    )
+                ).mappings().all()
+            )
+
+        reply_to = (
+            str(anchor.get("reply_to") or "").strip()
+            if use_core_reply_to
+            else str(reply_to_message_id or "").strip()
+        )
+        if reply_to and not any(row.get("message_id") == reply_to for row in rows):
+            reply_row = (
+                await session.execute(
+                    select(Messages.__table__).where(
+                        Messages.stream_id == stream_id,
+                        Messages.message_id == reply_to,
+                    )
+                )
+            ).mappings().first()
+            if reply_row is not None:
+                rows.append(dict(reply_row))
+
+    rows.sort(key=lambda row: (float(row["time"]), int(row["id"])))
+    return await _message_snapshots_from_rows(rows)
 
 
 __all__ = [
@@ -430,6 +560,7 @@ __all__ = [
     "get_managed_task",
     "get_vector_database",
     "read_message_snapshots",
+    "read_message_context_snapshots",
     "read_migration_message_candidates",
     "read_migration_person_candidates",
     "read_migration_stream_candidates",
