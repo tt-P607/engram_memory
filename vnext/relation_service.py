@@ -338,6 +338,11 @@ class MergeService:
             return data.canonical_memory_id, await self.merge_into_existing(data, context)
         if self._memory_service is None or data.new_memory is None:
             raise ValueError("NEW_CANONICAL 未装配 MemoryService")
+        prepared_memory = replace(
+            data.new_memory,
+            evidence=await self._memory_service.prepare_evidence(data.new_memory.evidence),
+        )
+        data = replace(data, new_memory=prepared_memory)
         async with self._schema.database.session() as session:
             await session.execute(text("PRAGMA defer_foreign_keys = ON"))
             completed = await _claim_domain_operation(
@@ -502,6 +507,18 @@ class MergeService:
             )
             if len(sources) != len(data.source_memory_ids):
                 raise ValueError("存在无效 Merge Source")
+            if data.evidence_ids:
+                if self._memory_service is None:
+                    raise ValueError("关联 Merge Evidence 需要装配 MemoryService")
+                if not canonical.current_revision_id:
+                    raise ValueError("Canonical Memory 缺少当前 Revision")
+                await self._memory_service._attach_evidence(
+                    session,
+                    canonical.current_revision_id,
+                    (),
+                    data.evidence_ids,
+                    now,
+                )
             if any(source.status is not MemoryStatus.ACTIVE for source in sources):
                 existing = tuple(
                     (

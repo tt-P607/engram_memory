@@ -7,14 +7,13 @@ Actor / Sleep Agent 权限矩阵。BaseTool 层只能薄封装本模块；
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from src.app.plugin_system.api import person_api
 from sqlalchemy import desc, func, select
 
-from .framework_bridge import read_message_snapshots
 from .domain import (
     CreateMemoryInput,
     EvidenceInput,
@@ -29,24 +28,27 @@ from .domain import (
 )
 from .enums import (
     ActorType,
-    ClaimBasis,
     EvidenceSourceType,
     MemoryEventType,
     MemoryKind,
     MemoryStatus,
-    ProvenanceQuality,
     RelationType,
 )
+from .evidence_service import EvidenceService
+from .framework_bridge import read_message_context_snapshots, read_message_snapshots
 from .memory_service import MemoryService
 from .models import (
     EvidenceMessageLinkModel,
+    EvidenceMessageSnapshotModel,
+    EvidenceModel,
     MemoryEventModel,
-    MemoryAssessmentModel,
     MemoryModel,
     MemoryRelationModel,
     MemoryRevisionModel,
     MemoryRevisionParticipantModel,
     MemoryRevisionSubjectModel,
+    CandidateEvidenceModel,
+    RevisionEvidenceModel,
 )
 from .persona_service import PersonaService
 from .relation_service import MergeService, RelationService
@@ -64,6 +66,7 @@ SLEEP_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset(
         "memory_search",
         "memory_read",
         "evidence_read",
+        "message_context_read",
         "memory_write",
         "memory_reinforce",
         "memory_revise",
@@ -96,6 +99,25 @@ class ToolContext:
         )
 
 
+def _context_message_time(message: dict[str, object]) -> float:
+    """返回快照时间戳；无法解析的时间排在有效时间之后。"""
+    value = message.get("time")
+    if isinstance(value, datetime):
+        return value.timestamp() if value.tzinfo is not None else float("inf")
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError:
+                return float("inf")
+            return parsed.timestamp() if parsed.tzinfo is not None else float("inf")
+    return float("inf")
+
+
 class VNextToolService:
     """vNext 全部 Tool 的领域门面，内含权限矩阵硬约束。"""
 
@@ -110,6 +132,7 @@ class VNextToolService:
         default_search_limit: int = 5,
         max_search_limit: int = 20,
         rrf_k: int = 60,
+        on_actor_memory_changed: Callable[[tuple[str, ...]], Awaitable[None]] | None = None,
     ) -> None:
         """装配领域服务与 Tool 级参数。
 
@@ -134,16 +157,20 @@ class VNextToolService:
         self._relation = RelationService(schema)
         self._merge = MergeService(schema, self._memory)
         self._repository = MemoryRepository(schema)
+        self._evidence = EvidenceService(schema)
         self._retrieval = RetrievalService(schema, vector_backend, rrf_k=rrf_k)
         self._persona = PersonaService(schema, max_length=persona_max_length)
         self._recent_memory_limit = recent_memory_limit
         self._default_search_limit = default_search_limit
         self._max_search_limit = max_search_limit
+        self._on_actor_memory_changed = on_actor_memory_changed
 
     def require_permission(self, tool: str, context: ToolContext) -> None:
         """按 §82/§83 权限矩阵校验调用资格。"""
         if context.actor_type is ActorType.SLEEP_AGENT:
             allowed = SLEEP_AGENT_ALLOWED_TOOLS
+        elif context.actor_type is ActorType.MIGRATION:
+            allowed = frozenset({"evidence_read"})
         elif context.actor_type is ActorType.ACTOR:
             allowed = ACTOR_ALLOWED_TOOLS
         elif context.actor_type is ActorType.ADMIN:
@@ -186,10 +213,7 @@ class VNextToolService:
             {
                 "memory_id": item.memory_id,
                 "status": views[item.memory_id]["status"],
-                "anchor_title": item.anchor_title,
-                "current_revision_title": views[item.memory_id][
-                    "current_revision_title"
-                ],
+                "title": item.title,
                 "current_content_preview": views[item.memory_id][
                     "current_content_preview"
                 ],
@@ -198,7 +222,6 @@ class VNextToolService:
                 "last_experienced_at": views[item.memory_id][
                     "last_experienced_at"
                 ],
-                "salience": views[item.memory_id]["salience"],
                 "matched_by": list(item.matched_by),
                 "rrf_score": item.rrf_score,
             }
@@ -222,7 +245,6 @@ class VNextToolService:
                             MemoryRevisionModel.title,
                             MemoryRevisionModel.content,
                             MemoryRevisionModel.memory_kind,
-                            MemoryAssessmentModel.salience,
                             MemoryModel.last_experienced_at,
                             MemoryRevisionSubjectModel.subject_kind,
                             MemoryRevisionSubjectModel.person_id,
@@ -233,11 +255,6 @@ class VNextToolService:
                             MemoryRevisionModel,
                             MemoryRevisionModel.revision_id
                             == MemoryModel.current_revision_id,
-                        )
-                        .join(
-                            MemoryAssessmentModel,
-                            MemoryAssessmentModel.assessment_id
-                            == MemoryModel.current_assessment_id,
                         )
                         .join(
                             MemoryRevisionSubjectModel,
@@ -261,7 +278,6 @@ class VNextToolService:
                     "subject_label": row.subject_label,
                 },
                 "last_experienced_at": row.last_experienced_at,
-                "salience": row.salience.value,
             }
             for row in rows
         }
@@ -281,19 +297,22 @@ class VNextToolService:
             raise ValueError(f"Memory {memory_id} 不存在")
         await self._record_read_event(memory_id, context)
         revision = await self._repository.get_current_revision(memory_id)
-        assessment = await self._repository.get_current_assessment(memory_id)
         merged_into = await self._resolve_merged_into(memory_id, memory.status)
+        revision_id = revision.revision_id if revision is not None else None
         current: dict[str, object] = {
             "memory_id": memory.memory_id,
             "status": memory.status.value,
             "merged_into": merged_into,
-            "anchor_title": memory.anchor_title,
+            "created_at": memory.created_at,
             "last_experienced_at": memory.last_experienced_at,
             "current_revision": self._revision_view(revision),
             "current_subject": await self._subject_view(revision),
             "current_participants": await self._participants_view(revision),
-            "current_assessment": self._assessment_view(assessment),
-            "evidence_summary": await self._evidence_summary(memory_id, full=False),
+            "evidence_summary": await self._evidence_summary(
+                memory_id,
+                revision_id=revision_id,
+                full=False,
+            ),
         }
         if view == "current":
             return current
@@ -303,14 +322,19 @@ class VNextToolService:
         ]
         if view == "history":
             return {**current, "history": history}
+        evidence_metadata: list[dict[str, object]] = []
+        for item in await self._repository.list_revisions(memory_id):
+            evidence_metadata.extend(
+                await self._evidence_summary(
+                    memory_id,
+                    revision_id=item.revision_id,
+                    full=True,
+                )
+            )
         return {
             **current,
             "history": history,
-            "evidence_metadata": await self._evidence_summary(memory_id, full=True),
-            "assessment_history": [
-                self._assessment_view(item)
-                for item in await self._repository.list_assessments(memory_id)
-            ],
+            "evidence_metadata": evidence_metadata,
             "events": [
                 {
                     "event_id": item.event_id,
@@ -331,23 +355,45 @@ class VNextToolService:
     ) -> dict[str, str]:
         """memory_write：主动写入直接创建 Formal Memory（§67）。
 
-        Runtime 自动附加 ACTOR_WRITE / EXPLICIT_MEMORY_WRITE Evidence。
+        Runtime 自动附加与当前聊天原始消息关联的 ACTOR_WRITE Evidence。
         """
         self.require_permission("memory_write", context)
         message_ids = evidence_message_ids or context.evidence_message_ids
-        auto_evidence = EvidenceInput(
-            source_type=EvidenceSourceType.ACTOR_WRITE,
-            claim_basis=ClaimBasis.EXPLICIT_MEMORY_WRITE,
-            provenance_quality=ProvenanceQuality.EXACT,
-            observed_at=datetime.now(UTC),
-            messages=self._message_links(message_ids, context.stream_id),
+        if context.actor_type is ActorType.ACTOR and not message_ids:
+            raise ValueError("主动写入正式记忆必须引用当前聊天的原始消息")
+        evidence = data.evidence
+        if context.actor_type is ActorType.ACTOR and any(
+            message.stream_id != context.stream_id
+            or message.message_id not in message_ids
+            for item in evidence
+            for message in item.messages
+        ):
+            raise ValueError("主动写入证据必须属于当前聊天已验证的来源消息")
+        linked_messages = {
+            (message.stream_id, message.message_id)
+            for item in evidence
+            for message in item.messages
+        }
+        missing_ids = tuple(
+            message_id
+            for message_id in message_ids
+            if (context.stream_id or "", message_id) not in linked_messages
         )
-        merged = replace(data, evidence=data.evidence + (auto_evidence,))
+        if missing_ids:
+            evidence += (
+                EvidenceInput(
+                    source_type=EvidenceSourceType.ACTOR_WRITE,
+                    observed_at=datetime.now(UTC),
+                    messages=self._message_links(missing_ids, context.stream_id),
+                ),
+            )
+        merged = replace(data, evidence=evidence)
         result = await self._memory.create_memory(merged, context.to_write_context())
+        if context.actor_type is ActorType.ACTOR and self._on_actor_memory_changed is not None:
+            await self._on_actor_memory_changed((result.memory_id,))
         return {
             "memory_id": result.memory_id,
             "revision_id": result.revision_id,
-            "assessment_id": result.assessment_id,
         }
 
     async def memory_reinforce(
@@ -362,7 +408,6 @@ class VNextToolService:
         return {
             "memory_id": result.memory_id,
             "revision_id": result.revision_id,
-            "assessment_id": result.assessment_id,
         }
 
     async def memory_revise(
@@ -384,10 +429,11 @@ class VNextToolService:
             raise PermissionError("普通 Actor 的 EXPLICIT_CORRECTION 必须绑定当前纠错消息证据")
         data = self._with_revise_evidence(data, context.evidence_message_ids, context)
         result = await self._memory.revise_memory(data, context.to_write_context())
+        if context.actor_type is ActorType.ACTOR and self._on_actor_memory_changed is not None:
+            await self._on_actor_memory_changed((result.memory_id,))
         return {
             "memory_id": result.memory_id,
             "revision_id": result.revision_id,
-            "assessment_id": result.assessment_id,
         }
 
     async def memory_merge(
@@ -420,16 +466,349 @@ class VNextToolService:
         evidence_ids: tuple[str, ...],
         context: ToolContext,
     ) -> tuple[dict[str, object], ...]:
-        """evidence_read：从公共消息源读取证据引用及原始消息（§81）。"""
+        """读取已授权候选或正式记忆关联的长期消息快照。"""
         self.require_permission("evidence_read", context)
         if not evidence_ids:
             raise ValueError("evidence_ids 不能为空")
+        if context.actor_type is ActorType.MIGRATION:
+            async with self._schema.database.session() as session:
+                allowed_ids = set(
+                    (
+                        await session.scalars(
+                            select(CandidateEvidenceModel.evidence_id).distinct()
+                        )
+                    ).all()
+                )
+            if set(evidence_ids) - allowed_ids:
+                raise PermissionError("Migration 只能读取 Candidate 关联的 Evidence")
+        elif context.actor_type is ActorType.SLEEP_AGENT:
+            async with self._schema.database.session() as session:
+                candidate_ids = set(
+                    (
+                        await session.scalars(
+                            select(CandidateEvidenceModel.evidence_id).distinct()
+                        )
+                    ).all()
+                )
+                revision_ids = set(
+                    (
+                        await session.scalars(
+                            select(RevisionEvidenceModel.evidence_id).distinct()
+                        )
+                    ).all()
+                )
+            if set(evidence_ids) - (candidate_ids | revision_ids):
+                raise PermissionError("Sleep Agent 只能读取已关联的 Candidate 或 Memory Evidence")
+        return await self._read_evidence_records(evidence_ids, include_messages=True)
+
+    async def message_context_read(
+        self,
+        evidence_id: str,
+        message_id: str,
+        context: ToolContext,
+        *,
+        before: int = 8,
+        after: int = 20,
+    ) -> dict[str, object]:
+        """读取已关联 Evidence anchor 的有限原始聊天上下文。"""
+        if context.actor_type is not ActorType.SLEEP_AGENT:
+            raise PermissionError("只有 Sleep Agent 可以读取消息上下文")
+        if not evidence_id.strip() or not message_id.strip():
+            raise ValueError("evidence_id 和 message_id 不能为空")
+        if (
+            isinstance(before, bool)
+            or not isinstance(before, int)
+            or not 0 <= before <= 30
+        ):
+            raise ValueError("before 必须是 0 到 30 的整数")
+        if (
+            isinstance(after, bool)
+            or not isinstance(after, int)
+            or not 0 <= after <= 30
+        ):
+            raise ValueError("after 必须是 0 到 30 的整数")
+
         async with self._schema.database.session() as session:
-            rows = tuple(
+            candidate_link = (
+                await session.scalars(
+                    select(CandidateEvidenceModel.evidence_id)
+                    .where(CandidateEvidenceModel.evidence_id == evidence_id)
+                    .limit(1)
+                )
+            ).first()
+            revision_link = (
+                await session.scalars(
+                    select(RevisionEvidenceModel.evidence_id)
+                    .where(RevisionEvidenceModel.evidence_id == evidence_id)
+                    .limit(1)
+                )
+            ).first()
+            if candidate_link is None and revision_link is None:
+                raise PermissionError(
+                    "Sleep Agent 只能读取已关联 Candidate 或 Memory 的 Evidence"
+                )
+            anchor_links = tuple(
+                (
+                    await session.scalars(
+                        select(EvidenceMessageLinkModel).where(
+                            EvidenceMessageLinkModel.evidence_id == evidence_id,
+                            EvidenceMessageLinkModel.message_id == message_id,
+                        )
+                    )
+                ).all()
+            )
+            stream_ids = tuple(dict.fromkeys(item.stream_id for item in anchor_links))
+            if not stream_ids:
+                raise PermissionError("anchor 消息不属于指定 Evidence")
+            if len(stream_ids) != 1:
+                raise ValueError("anchor 消息在指定 Evidence 下对应多个 stream")
+            stream_id = stream_ids[0]
+            saved_anchor_rows = tuple(
+                (
+                    await session.scalars(
+                        select(EvidenceMessageSnapshotModel).where(
+                            EvidenceMessageSnapshotModel.stream_id == stream_id,
+                            EvidenceMessageSnapshotModel.message_id == message_id,
+                        )
+                    )
+                ).all()
+            )
+
+        saved_anchor: dict[str, object] | None = None
+        if saved_anchor_rows:
+            row = saved_anchor_rows[0]
+            saved_anchor = dict(row.payload)
+            saved_anchor.update(
+                message_id=row.message_id,
+                stream_id=row.stream_id,
+                source="evidence_snapshot",
+                captured_at=row.captured_at.isoformat(),
+                redacted=row.redacted_at is not None,
+            )
+            if row.redacted_at is not None:
+                raise PermissionError("anchor 消息已隐私删除，不能读取上下文")
+
+        saved_reply_metadata = saved_anchor is not None and "reply_to" in saved_anchor
+        reply_to_message_id = (
+            str(saved_anchor.get("reply_to") or "").strip()
+            if saved_reply_metadata and saved_anchor is not None
+            else None
+        )
+        core_snapshots = await read_message_context_snapshots(
+            stream_id,
+            message_id,
+            before,
+            after,
+            reply_to_message_id=reply_to_message_id,
+            use_core_reply_to=not saved_reply_metadata,
+        )
+        core_by_id = {item.message_id: item for item in core_snapshots}
+        core_anchor = core_by_id.get(message_id)
+        if not saved_reply_metadata and core_anchor is not None:
+            reply_to_message_id = core_anchor.reply_to
+            if saved_anchor is not None:
+                saved_anchor = {**saved_anchor, "reply_to": core_anchor.reply_to}
+
+        references = tuple(
+            dict.fromkeys(
+                [(stream_id, item.message_id) for item in core_snapshots]
+                + ([(stream_id, reply_to_message_id)] if reply_to_message_id else [])
+            )
+        )
+        saved_by_key = {
+            (str(item["stream_id"]), str(item["message_id"])): item
+            for item in await self._evidence.read_messages(references)
+        }
+        saved_anchor = saved_by_key.get((stream_id, message_id), saved_anchor)
+        if (
+            saved_anchor is not None
+            and "reply_to" not in saved_anchor
+            and core_anchor is not None
+        ):
+            saved_anchor = {**saved_anchor, "reply_to": core_anchor.reply_to}
+        if saved_anchor is not None and saved_anchor.get("redacted"):
+            raise PermissionError("anchor 消息已隐私删除，不能读取上下文")
+
+        messages: list[dict[str, object]] = []
+        seen_ids: set[str] = set()
+        for snapshot in core_snapshots:
+            key = (snapshot.stream_id, snapshot.message_id)
+            saved = saved_by_key.get(key)
+            if saved is not None and saved.get("redacted"):
+                view: dict[str, object] = {
+                    "message_id": snapshot.message_id,
+                    "stream_id": snapshot.stream_id,
+                    "time": snapshot.time,
+                    "source": "evidence_snapshot",
+                    "redacted": True,
+                }
+            elif snapshot.message_id == message_id and saved_anchor is not None:
+                view = dict(saved_anchor)
+            else:
+                view = dict(saved) if saved is not None else snapshot.to_dict()
+            messages.append(view)
+            seen_ids.add(snapshot.message_id)
+
+        reply_target_status = "none"
+        has_snapshot_only_reply = False
+        if core_anchor is None:
+            if saved_anchor is not None:
+                messages = [dict(saved_anchor)]
+                seen_ids = {message_id}
+                if reply_to_message_id:
+                    key = (stream_id, reply_to_message_id)
+                    saved_reply = saved_by_key.get(key)
+                    if saved_reply is not None and saved_reply.get("redacted"):
+                        reply_view = {
+                            "message_id": reply_to_message_id,
+                            "stream_id": stream_id,
+                            "source": "evidence_snapshot",
+                            "redacted": True,
+                        }
+                        reply_target_status = "redacted"
+                    else:
+                        reply_snapshot = await read_message_snapshots((key,))
+                        reply_view = (
+                            dict(saved_reply)
+                            if saved_reply is not None
+                            else reply_snapshot[0].to_dict()
+                            if reply_snapshot
+                            else {}
+                        )
+                        reply_target_status = "included" if reply_view else "missing"
+                    if reply_view and reply_to_message_id != message_id:
+                        messages.append(reply_view)
+                        seen_ids.add(reply_to_message_id)
+                messages.sort(key=_context_message_time)
+        elif reply_to_message_id:
+            if reply_to_message_id in seen_ids:
+                target = saved_by_key.get((stream_id, reply_to_message_id))
+                reply_target_status = (
+                    "redacted"
+                    if target is not None and target.get("redacted")
+                    else "included"
+                )
+            else:
+                key = (stream_id, reply_to_message_id)
+                saved_reply = saved_by_key.get(key)
+                if saved_reply is not None and saved_reply.get("redacted"):
+                    reply_view = {
+                        "message_id": reply_to_message_id,
+                        "stream_id": stream_id,
+                        "source": "evidence_snapshot",
+                        "redacted": True,
+                    }
+                    reply_target_status = "redacted"
+                else:
+                    reply_snapshot = await read_message_snapshots((key,))
+                    reply_view = (
+                        dict(saved_reply)
+                        if saved_reply is not None
+                        else reply_snapshot[0].to_dict()
+                        if reply_snapshot
+                        else {}
+                    )
+                    reply_target_status = "included" if reply_view else "missing"
+                    has_snapshot_only_reply = bool(saved_reply and reply_view)
+                if reply_view:
+                    anchor_index = next(
+                        (
+                            index
+                            for index, item in enumerate(messages)
+                            if item.get("message_id") == message_id
+                        ),
+                        len(messages),
+                    )
+                    if _context_message_time(reply_view) < _context_message_time(
+                        messages[anchor_index]
+                    ):
+                        messages.insert(anchor_index, reply_view)
+                    else:
+                        messages.insert(anchor_index + 1, reply_view)
+                    seen_ids.add(reply_to_message_id)
+
+        anchor_source = (
+            "evidence_snapshot"
+            if saved_anchor is not None
+            else "core_message"
+            if core_anchor is not None
+            else "missing"
+        )
+        context_status: dict[str, object] = {
+            "anchor_source": anchor_source,
+            "core_window": "available" if core_anchor is not None else "anchor_missing",
+            "ordering": (
+                "core_time_id_with_snapshot_reply"
+                if has_snapshot_only_reply
+                else "core_time_id"
+                if core_anchor is not None
+                else "snapshot_time_only"
+                if saved_anchor is not None
+                else "unavailable"
+            ),
+            "reply_target": reply_target_status,
+        }
+        return {
+            "evidence_id": evidence_id,
+            "anchor_message_id": message_id,
+            "stream_id": stream_id,
+            "messages": messages,
+            "context_status": context_status,
+        }
+
+    async def memory_evidence_read(
+        self,
+        memory_id: str,
+        context: ToolContext,
+        *,
+        revision_id: str | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """按已授权 Memory 与 Revision 范围读取关联 Evidence 快照。"""
+        self.require_permission("memory_read", context)
+        memory = await self._repository.get_memory(memory_id)
+        if memory is None:
+            raise ValueError(f"Memory {memory_id} 不存在")
+        selected_revision_id = revision_id or memory.current_revision_id
+        revisions = await self._repository.list_revisions(memory_id)
+        if not any(item.revision_id == selected_revision_id for item in revisions):
+            raise ValueError("revision_id 不属于指定 Memory")
+        evidence = await self._repository.list_evidence(
+            memory_id,
+            revision_id=selected_revision_id,
+        )
+        await self._record_read_event(memory_id, context)
+        return await self._read_evidence_records(
+            tuple(item.evidence_id for item in evidence),
+            include_messages=True,
+            revision_id=selected_revision_id,
+        )
+
+    async def _read_evidence_records(
+        self,
+        evidence_ids: tuple[str, ...],
+        *,
+        include_messages: bool,
+        revision_id: str | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """读取 Evidence 元数据和其精确关联的长期消息快照。"""
+        if not evidence_ids:
+            return ()
+        unique_ids = tuple(dict.fromkeys(evidence_ids))
+        async with self._schema.database.session() as session:
+            evidence_rows = tuple(
+                (
+                    await session.scalars(
+                        select(EvidenceModel).where(
+                            EvidenceModel.evidence_id.in_(unique_ids)
+                        )
+                    )
+                ).all()
+            )
+            links = tuple(
                 (
                     await session.scalars(
                         select(EvidenceMessageLinkModel)
-                        .where(EvidenceMessageLinkModel.evidence_id.in_(evidence_ids))
+                        .where(EvidenceMessageLinkModel.evidence_id.in_(unique_ids))
                         .order_by(
                             EvidenceMessageLinkModel.evidence_id,
                             EvidenceMessageLinkModel.ordinal,
@@ -437,82 +816,73 @@ class VNextToolService:
                     )
                 ).all()
             )
-        links_by_evidence: dict[str, list[tuple[str, str, int]]] = {
-            evidence_id: [] for evidence_id in evidence_ids
+        evidence_by_id = {row.evidence_id: row for row in evidence_rows}
+        links_by_id: dict[str, list[EvidenceMessageLinkModel]] = {
+            evidence_id: [] for evidence_id in unique_ids
         }
-        for row in rows:
-            links_by_evidence.setdefault(row.evidence_id, []).append(
-                (row.message_id, row.stream_id, row.ordinal)
+        for link in links:
+            links_by_id.setdefault(link.evidence_id, []).append(link)
+
+        snapshots_by_ref: dict[tuple[str, str], dict[str, object]] = {}
+        if include_messages:
+            references = tuple(
+                dict.fromkeys((link.stream_id, link.message_id) for link in links)
             )
-        source_messages = await self._load_evidence_messages(
-            tuple(
-                link
-                for links in links_by_evidence.values()
-                for link in links
-            )
-        )
+            snapshots = await self._evidence.read_messages(references)
+            snapshots_by_ref = {
+                (str(item.get("stream_id") or ""), str(item.get("message_id") or "")): item
+                for item in snapshots
+            }
+
         result: list[dict[str, object]] = []
-        for evidence_id in evidence_ids:
-            messages: list[dict[str, object]] = []
-            for message_id, stream_id, ordinal in sorted(
-                links_by_evidence.get(evidence_id, ()),
-                key=lambda item: item[2],
-            ):
-                message = source_messages.get((stream_id, message_id))
-                if message is None:
-                    message = source_messages.get(("", message_id))
-                if message is None and not stream_id:
-                    message = next(
-                        (
-                            row
-                            for (_, candidate_id), row in source_messages.items()
-                            if candidate_id == message_id
-                        ),
-                        None,
-                    )
-                if message is None:
-                    continue
-                messages.append(
+        for evidence_id in unique_ids:
+            row = evidence_by_id.get(evidence_id)
+            if row is None:
+                result.append(
                     {
-                        "message_id": message_id,
-                        "stream_id": stream_id or message.get("stream_id", ""),
-                        "ordinal": ordinal,
-                        "time": message.get("time"),
-                        "sender_id": message.get("sender_id"),
-                        "sender_name": message.get("sender_name"),
-                        "sender_cardname": message.get("sender_cardname"),
-                        "person_id": message.get("person_id"),
-                        "platform": message.get("platform"),
-                        "message_type": message.get("message_type"),
-                        "content": message.get("content", ""),
-                        "processed_plain_text": message.get(
-                            "processed_plain_text", ""
-                        ),
-                        "text": message.get("processed_plain_text")
-                        or message.get("content", ""),
-                        "source": "message_store",
+                        "evidence_id": evidence_id,
+                        "source_status": "MISSING_EVIDENCE",
+                        "revision_id": revision_id,
                     }
                 )
-            result.append({"evidence_id": evidence_id, "messages": messages})
+                continue
+            record: dict[str, object] = {
+                "evidence_id": row.evidence_id,
+                "source_type": row.source_type.value,
+                "observed_at": row.observed_at,
+                "source_ref": row.source_ref,
+                "note": row.note,
+                "created_at": row.created_at,
+                "revision_id": revision_id,
+            }
+            if include_messages:
+                messages: list[dict[str, object]] = []
+                missing_messages: list[dict[str, object]] = []
+                for link in links_by_id.get(evidence_id, ()):
+                    reference = (link.stream_id, link.message_id)
+                    snapshot = snapshots_by_ref.get(reference)
+                    status = (
+                        "MISSING"
+                        if snapshot is None
+                        else "REDACTED"
+                        if snapshot.get("redacted")
+                        else "AVAILABLE"
+                    )
+                    message: dict[str, object] = {
+                        "stream_id": link.stream_id,
+                        "message_id": link.message_id,
+                        "ordinal": link.ordinal,
+                        "source_status": status,
+                    }
+                    if snapshot is not None and status == "AVAILABLE":
+                        message["snapshot"] = snapshot
+                    messages.append(message)
+                    if status != "AVAILABLE":
+                        missing_messages.append(message)
+                record["messages"] = messages
+                record["missing_messages"] = missing_messages
+            result.append(record)
         return tuple(result)
-
-    async def _load_evidence_messages(
-        self,
-        links: tuple[tuple[str, str, int], ...],
-    ) -> dict[tuple[str, str], dict[str, object]]:
-        """通过集中 Bridge 按消息 ID 批量读取，不扫描完整消息历史。"""
-        refs = tuple((stream_id, message_id) for message_id, stream_id, _ in links)
-        snapshots = await read_message_snapshots(refs)
-        unscoped_ids = {
-            message_id for message_id, stream_id, _ in links if not stream_id
-        }
-        result: dict[tuple[str, str], dict[str, object]] = {}
-        for snapshot in snapshots:
-            row = snapshot.to_dict()
-            result[(snapshot.stream_id, snapshot.message_id)] = row
-            if snapshot.message_id in unscoped_ids:
-                result[("", snapshot.message_id)] = row
-        return result
 
     async def person_lookup(
         self,
@@ -524,18 +894,23 @@ class VNextToolService:
         if not person_id.strip():
             raise ValueError("person_id 不能为空")
         basic_person_info = await self._basic_person_info(person_id)
-        persona = await self._persona.get_persona(person_id)
+        person_aliases = await self._repository.resolve_person_aliases(person_id)
+        persona = None
+        for alias in person_aliases:
+            persona = await self._persona.get_persona(alias)
+            if persona is not None:
+                break
         recent = await self._recent_memories(person_id)
         return {
             "person_id": person_id,
+            "core_person_id": persona.person_id if persona else None,
             "basic_person_info": basic_person_info,
-            "persona_impression": persona.impression_text if persona else None,
+            "persona_impression": (persona.impression_text or None) if persona else None,
             "persona_updated_at": persona.updated_at if persona else None,
             "recent_memories": [
                 {
                     "memory_id": row.memory_id,
-                    "anchor_title": row.anchor_title,
-                    "current_revision_title": row.title,
+                    "title": row.title,
                     "current_content_preview": row.content[:80],
                     "last_experienced_at": row.last_experienced_at or row.created_at,
                 }
@@ -543,23 +918,20 @@ class VNextToolService:
             ],
         }
 
-    @staticmethod
-    async def _basic_person_info(person_id: str) -> dict[str, object] | None:
-        """按 ``platform:user_id`` 读取公开 Person API 的基本资料。"""
-        if ":" not in person_id:
-            return None
-        platform, user_id = person_id.split(":", 1)
-        if not platform.strip() or not user_id.strip():
-            return None
-        person = await person_api.get_person(platform, user_id)
-        if person is None:
-            return None
-        return {
-            "platform": platform,
-            "user_id": user_id,
-            "nickname": person.nickname,
-            "cardname": person.cardname,
-        }
+    async def _basic_person_info(self, person_id: str) -> dict[str, object] | None:
+        """优先读取核心身份中心，再使用已保存的消息人物元数据。"""
+        person = await self._persona.get_core_person(person_id)
+        if person is not None:
+            return {
+                "platform": person.platform,
+                "user_id": person.user_id,
+                "nickname": person.nickname,
+                "cardname": person.cardname,
+            }
+        snapshot_info = await self._repository.get_person_metadata(person_id)
+        if snapshot_info is not None:
+            return snapshot_info
+        return None
 
     async def person_impression_update(
         self,
@@ -577,6 +949,15 @@ class VNextToolService:
             "update_id": result.update_id,
         }
 
+    async def person_impression_review_complete(
+        self, data: PersonaUpdateInput, context: ToolContext,
+    ) -> None:
+        """登记 Sleep 对核心印象的保持决定及其正式记忆依据。"""
+        self.require_permission("person_impression_update", context)
+        if context.sleep_session_id is not None:
+            data = replace(data, sleep_session_id=context.sleep_session_id)
+        await self._persona.record_unchanged_review(data, context.to_write_context())
+
     @staticmethod
     def _with_reinforce_evidence(
         data: ReinforceMemoryInput,
@@ -588,8 +969,6 @@ class VNextToolService:
             return data
         auto = EvidenceInput(
             source_type=EvidenceSourceType.ACTOR_WRITE,
-            claim_basis=ClaimBasis.EXPLICIT_MEMORY_WRITE,
-            provenance_quality=ProvenanceQuality.EXACT,
             observed_at=datetime.now(UTC),
             messages=VNextToolService._message_links(message_ids, context.stream_id),
         )
@@ -606,8 +985,6 @@ class VNextToolService:
             return data
         auto = EvidenceInput(
             source_type=EvidenceSourceType.ACTOR_WRITE,
-            claim_basis=ClaimBasis.EXPLICIT_MEMORY_WRITE,
-            provenance_quality=ProvenanceQuality.EXACT,
             observed_at=datetime.now(UTC),
             messages=VNextToolService._message_links(message_ids, context.stream_id),
         )
@@ -630,12 +1007,13 @@ class VNextToolService:
         当前 Revision 的 Subject 或 Participants 命中人物、status 为 ACTIVE，
         按 last_experienced_at（缺省 created_at）降序取前 recent_memory_limit 条。
         """
+        person_ids = await self._repository.resolve_person_aliases(person_id)
         async with self._schema.database.session() as session:
             subject_ids = set(
                 (
                     await session.scalars(
                         select(MemoryRevisionSubjectModel.revision_id).where(
-                            MemoryRevisionSubjectModel.person_id == person_id
+                            MemoryRevisionSubjectModel.person_id.in_(person_ids)
                         )
                     )
                 ).all()
@@ -644,7 +1022,7 @@ class VNextToolService:
                 (
                     await session.scalars(
                         select(MemoryRevisionParticipantModel.revision_id).where(
-                            MemoryRevisionParticipantModel.person_id == person_id
+                            MemoryRevisionParticipantModel.person_id.in_(person_ids)
                         )
                     )
                 ).all()
@@ -657,7 +1035,6 @@ class VNextToolService:
                     await session.execute(
                         select(
                             MemoryModel.memory_id,
-                            MemoryModel.anchor_title,
                             MemoryModel.last_experienced_at,
                             MemoryModel.created_at,
                             MemoryRevisionModel.title,
@@ -727,32 +1104,31 @@ class VNextToolService:
         self,
         memory_id: str,
         *,
+        revision_id: str | None,
         full: bool,
     ) -> list[dict[str, object]]:
-        """读取记忆关联证据摘要或完整元数据。"""
-        evidences = await self._repository.list_evidence(memory_id)
+        """读取记忆指定版本关联的证据摘要或长期快照。"""
+        evidences = await self._repository.list_evidence(
+            memory_id,
+            revision_id=revision_id,
+        )
         if not full:
             return [
                 {
                     "evidence_id": item.evidence_id,
                     "source_type": item.source_type.value,
-                    "claim_basis": item.claim_basis.value,
+                    "observed_at": item.observed_at,
+                    "note": item.note,
                 }
                 for item in evidences
             ]
-        return [
-            {
-                "evidence_id": item.evidence_id,
-                "source_type": item.source_type.value,
-                "claim_basis": item.claim_basis.value,
-                "provenance_quality": item.provenance_quality.value,
-                "observed_at": item.observed_at,
-                "source_ref": item.source_ref,
-                "note": item.note,
-                "created_at": item.created_at,
-            }
-            for item in evidences
-        ]
+        return list(
+            await self._read_evidence_records(
+                tuple(item.evidence_id for item in evidences),
+                include_messages=True,
+                revision_id=revision_id,
+            )
+        )
 
     async def _subject_view(self, revision: object | None) -> dict[str, object] | None:
         """读取当前版本主体。"""
@@ -791,7 +1167,6 @@ class VNextToolService:
                 "participant_kind": row.participant_kind.value,
                 "person_id": row.person_id,
                 "label": row.label,
-                "role": row.role.value,
             }
             for row in rows
         ]
@@ -807,7 +1182,9 @@ class VNextToolService:
             "title": revision.title,  # type: ignore[attr-defined]
             "content": revision.content,  # type: ignore[attr-defined]
             "memory_kind": revision.memory_kind.value,  # type: ignore[attr-defined]
-            "confidence": revision.confidence.value,  # type: ignore[attr-defined]
+            "observed_at": revision.observed_at,  # type: ignore[attr-defined]
+            "created_at": revision.created_at,  # type: ignore[attr-defined]
+            "change_reason": revision.change_reason.value,  # type: ignore[attr-defined]
         }
 
     @staticmethod
@@ -819,22 +1196,7 @@ class VNextToolService:
             "title": revision.title,  # type: ignore[attr-defined]
             "content": revision.content,  # type: ignore[attr-defined]
             "memory_kind": revision.memory_kind.value,  # type: ignore[attr-defined]
-            "confidence": revision.confidence.value,  # type: ignore[attr-defined]
-            "confidence_reason": revision.confidence_reason,  # type: ignore[attr-defined]
             "observed_at": revision.observed_at,  # type: ignore[attr-defined]
-            "event_start_at": revision.event_start_at,  # type: ignore[attr-defined]
-            "event_end_at": revision.event_end_at,  # type: ignore[attr-defined]
+            "created_at": revision.created_at,  # type: ignore[attr-defined]
             "change_reason": revision.change_reason.value,  # type: ignore[attr-defined]
-        }
-
-    @staticmethod
-    def _assessment_view(assessment: object | None) -> dict[str, object] | None:
-        """构造认知评估视图。"""
-        if assessment is None:
-            return None
-        return {
-            "assessment_id": assessment.assessment_id,  # type: ignore[attr-defined]
-            "stability": assessment.stability.value,  # type: ignore[attr-defined]
-            "salience": assessment.salience.value,  # type: ignore[attr-defined]
-            "reason": assessment.reason,  # type: ignore[attr-defined]
         }
