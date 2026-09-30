@@ -17,17 +17,12 @@ from .domain import (
     CandidateInput,
     EvidenceInput,
     EvidenceMessageInput,
+    ParticipantInput,
     SubjectInput,
 )
-from .enums import (
-    ClaimBasis,
-    ConfidenceLevel,
-    EvidenceSourceType,
-    MemoryKind,
-    ProvenanceQuality,
-    SalienceLevel,
-)
+from .enums import EvidenceSourceType, MemoryKind
 from .models import CandidateEncoderCursorModel
+from .message_display import has_unseparated_reply_preview, split_reply_preview
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +34,7 @@ class EncoderMessage:
     time: datetime
     text: str
     speaker: str | None = None
+    snapshot: dict[str, object] | None = None
 
     def sort_key(self) -> tuple[datetime, str]:
         """返回与游标一致的复合排序键。"""
@@ -49,20 +45,16 @@ class EncoderMessage:
 class EncoderDraft:
     """编码 LLM 输出的候选草案。
 
-    evidence_indexes 引用本批消息的下标（按时间升序），用于生成
-    MESSAGE_SET Evidence 的消息软引用。
+    evidence_indexes 引用本批消息的下标（按时间升序），用于持久化
+    MESSAGE_SET Evidence 的原始消息快照。
     """
 
     rough_title: str
     rough_content: str
-    retention_reason: str
     evidence_indexes: tuple[int, ...]
     proposed_kind: MemoryKind | None = None
-    confidence_hint: ConfidenceLevel | None = None
-    salience_hint: SalienceLevel | None = None
-    uncertainty_note: str | None = None
     subject: SubjectInput | None = None
-    claim_basis: ClaimBasis = ClaimBasis.DIRECT_STATEMENT
+    participants: tuple[ParticipantInput, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,13 +141,78 @@ class ExperienceEncoder:
         reference = cursor_updated_at.astimezone(UTC) if cursor_updated_at.tzinfo else cursor_updated_at
         return now - reference >= self._max_wait
 
-    def build_batch_text(self, batch: tuple[EncoderMessage, ...]) -> str:
-        """把批消息格式化为 LLM 可读文本。"""
+    def build_batch_text(
+        self,
+        batch: tuple[EncoderMessage, ...],
+        *,
+        context_messages: tuple[EncoderMessage, ...] = (),
+    ) -> str:
+        """保留新消息及有限上下文的原文与来源元数据。"""
+        messages = self._input_messages(batch, context_messages)
+        batch_keys = {(message.stream_id, message.message_id) for message in batch}
+        has_context = any(
+            (message.stream_id, message.message_id) not in batch_keys
+            for message in messages
+        )
         lines = []
-        for message in batch:
-            speaker = message.speaker or "未知"
-            time_text = message.time.astimezone(UTC).isoformat()
-            lines.append(f"[{time_text}] {speaker}: {message.text}")
+        for index, message in enumerate(messages):
+            snapshot = message.snapshot or {}
+            speaker = (
+                snapshot.get("sender_cardname")
+                or snapshot.get("sender_name")
+                or message.speaker
+                or "未知"
+            )
+            person_id = snapshot.get("person_id")
+            speaker_kind = (
+                "BOT"
+                if snapshot.get("speaker_is_bot") is True
+                or str(snapshot.get("sender_role") or "").casefold() == "bot"
+                or str(snapshot.get("speaker_kind") or "").upper() == "BOT"
+                or isinstance(person_id, str) and person_id.strip().casefold() == "bot"
+                else "ACCOUNT"
+                if person_id
+                else "UNKNOWN"
+            )
+            if speaker_kind == "BOT":
+                speaker = f"Bot ({speaker})"
+            sender_id = snapshot.get("sender_id")
+            message_type = snapshot.get("message_type")
+            reply_to = snapshot.get("reply_to")
+            own_text, reply_preview = split_reply_preview(message.text, reply_to)
+            reply_metadata = (
+                f"reply_to={reply_to.strip()} "
+                if isinstance(reply_to, str) and reply_to.strip()
+                else ""
+            )
+            message_time = message.time
+            if message_time.tzinfo is None:
+                message_time = message_time.replace(tzinfo=UTC)
+            time_text = message_time.astimezone().isoformat()
+            scope_name = (
+                "NEW"
+                if (message.stream_id, message.message_id) in batch_keys
+                else "CONTEXT"
+            )
+            scope = f" [{scope_name}]" if has_context else ""
+            reply_preview_text = (
+                f" reply_preview(非本次发言)={reply_preview}"
+                if reply_preview is not None
+                else ""
+            )
+            text_label = (
+                "消息全文(引用边界未分离)"
+                if has_unseparated_reply_preview(message.text, reply_to)
+                else "本次发言"
+            )
+            lines.append(
+                f"[{index}] [{time_text}]{scope} message_id={message.message_id} "
+                f"stream_id={message.stream_id} person_id={person_id or 'unknown'} "
+                f"{reply_metadata}"
+                f"sender_id={sender_id or 'unknown'} message_type={message_type or 'unknown'} "
+                f"speaker_kind={speaker_kind} "
+                f"speaker={speaker} {text_label}={own_text}{reply_preview_text}"
+            )
         return "\n".join(lines)
 
     async def encode(
@@ -163,6 +220,8 @@ class ExperienceEncoder:
         stream_id: str,
         batch: tuple[EncoderMessage, ...],
         draft_producer: DraftProducer,
+        *,
+        context_messages: tuple[EncoderMessage, ...] = (),
     ) -> EncodeResult:
         """编码一批新消息并持久化候选与游标。
 
@@ -176,14 +235,24 @@ class ExperienceEncoder:
         for message in batch:
             if message.stream_id != stream_id:
                 raise ValueError("批内消息 stream_id 必须一致")
+        for message in context_messages:
+            if message.stream_id != stream_id:
+                raise ValueError("上下文消息 stream_id 必须一致")
         last = batch[-1]
+        input_messages = self._input_messages(batch, context_messages)
+        batch_keys = {(message.stream_id, message.message_id) for message in batch}
         drafts = await self._produce_drafts(
             draft_producer,
-            self.build_batch_text(batch),
+            self.build_batch_text(batch, context_messages=context_messages),
         )
         if not isinstance(drafts, tuple):
             raise ValueError("draft producer 必须返回 tuple")
-        inputs = tuple(self._to_candidate_input(draft, batch) for draft in drafts)
+        inputs = tuple(
+            candidate_input
+            for draft in drafts
+            if self._draft_has_batch_evidence(draft, input_messages, batch_keys)
+            for candidate_input in (self._to_candidate_input(draft, input_messages),)
+        )
         candidate_ids = await self._candidates.create_candidates(
             inputs,
             cursor=(stream_id, last.time, last.message_id),
@@ -192,6 +261,42 @@ class ExperienceEncoder:
             candidate_ids=candidate_ids,
             last_processed_message_id=last.message_id,
             last_processed_message_time=last.time,
+        )
+
+    @staticmethod
+    def _input_messages(
+        batch: tuple[EncoderMessage, ...],
+        context_messages: tuple[EncoderMessage, ...],
+    ) -> tuple[EncoderMessage, ...]:
+        """Return a time-ordered, de-duplicated prompt and evidence window."""
+        messages_by_key = {
+            (message.stream_id, message.message_id): message
+            for message in context_messages
+        }
+        messages_by_key.update(
+            {
+                (message.stream_id, message.message_id): message
+                for message in batch
+            }
+        )
+        return tuple(sorted(messages_by_key.values(), key=EncoderMessage.sort_key))
+
+    @staticmethod
+    def _draft_has_batch_evidence(
+        draft: EncoderDraft,
+        input_messages: tuple[EncoderMessage, ...],
+        batch_keys: set[tuple[str, str]],
+    ) -> bool:
+        """Require every new candidate to cite at least one newly processed message."""
+        if not draft.evidence_indexes:
+            raise ValueError("草案必须引用至少一条消息证据")
+        for index in draft.evidence_indexes:
+            if index < 0 or index >= len(input_messages):
+                raise ValueError(f"草案证据下标越界: {index}")
+        return any(
+            (input_messages[index].stream_id, input_messages[index].message_id)
+            in batch_keys
+            for index in draft.evidence_indexes
         )
 
     async def _produce_drafts(
@@ -229,25 +334,21 @@ class ExperienceEncoder:
             EvidenceMessageInput(
                 message_id=message.message_id,
                 stream_id=message.stream_id,
+                snapshot=message.snapshot,
             )
             for message in referenced
         )
         evidence = EvidenceInput(
             source_type=EvidenceSourceType.MESSAGE_SET,
-            claim_basis=draft.claim_basis,
-            provenance_quality=ProvenanceQuality.EXACT,
             observed_at=earliest.time,
             messages=messages,
         )
         return CandidateInput(
             rough_title=draft.rough_title,
             rough_content=draft.rough_content,
-            retention_reason=draft.retention_reason,
             observed_at=earliest.time,
             evidence=(evidence,),
             proposed_kind=draft.proposed_kind,
-            confidence_hint=draft.confidence_hint,
-            salience_hint=draft.salience_hint,
-            uncertainty_note=draft.uncertainty_note,
             subject=draft.subject,
+            participants=draft.participants,
         )

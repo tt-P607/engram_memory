@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -14,15 +15,19 @@ from .domain import (
     CandidateActionInput,
     CandidateInput,
     CandidateStateTransition,
+    EvidenceInput,
+    EvidenceMessageInput,
     SleepSessionInput,
     SleepSessionResult,
 )
 from .enums import (
     CandidateActionType,
     CandidateStatus,
+    EvidenceSourceType,
     SleepCandidateOutcome,
     SleepSessionStatus,
 )
+from .evidence_service import EvidenceService
 from .models import (
     CandidateActionModel,
     CandidateActionTargetModel,
@@ -31,6 +36,7 @@ from .models import (
     CandidateModel,
     CandidateParticipantModel,
     CandidateSubjectModel,
+    DomainOperationModel,
     EvidenceMessageLinkModel,
     EvidenceModel,
     MemoryModel,
@@ -65,6 +71,7 @@ class CandidateService:
     def __init__(self, schema: VNextSchema) -> None:
         """绑定 vNext Schema。"""
         self._schema = schema
+        self._evidence = EvidenceService(schema)
 
     async def create_candidates(
         self,
@@ -73,8 +80,16 @@ class CandidateService:
         cursor: tuple[str, datetime, str] | None = None,
     ) -> tuple[str, ...]:
         """批量创建候选，并可在同一事务内推进编码游标。"""
+        prepared_candidates = []
         for candidate in candidates:
             candidate.validate()
+            prepared_candidates.append(
+                replace(
+                    candidate,
+                    evidence=await self._evidence.prepare_evidence(candidate.evidence),
+                )
+            )
+        candidates = tuple(prepared_candidates)
         if not candidates and cursor is None:
             return ()
         now = datetime.now(UTC)
@@ -89,10 +104,6 @@ class CandidateService:
                         rough_title=candidate.rough_title,
                         rough_content=candidate.rough_content,
                         proposed_kind=candidate.proposed_kind,
-                        confidence_hint=candidate.confidence_hint,
-                        salience_hint=candidate.salience_hint,
-                        retention_reason=candidate.retention_reason,
-                        uncertainty_note=candidate.uncertainty_note,
                         observed_at=candidate.observed_at,
                         created_at=now,
                         processing_session_id=None,
@@ -117,7 +128,6 @@ class CandidateService:
                             participant_kind=participant.participant_kind,
                             person_id=participant.person_id,
                             label=participant.label,
-                            role=participant.role,
                         )
                     )
                 for evidence in candidate.evidence:
@@ -126,8 +136,6 @@ class CandidateService:
                         EvidenceModel(
                             evidence_id=evidence_id,
                             source_type=evidence.source_type,
-                            claim_basis=evidence.claim_basis,
-                            provenance_quality=evidence.provenance_quality,
                             observed_at=evidence.observed_at,
                             source_ref=evidence.source_ref,
                             note=evidence.note,
@@ -149,9 +157,108 @@ class CandidateService:
                                 ordinal=ordinal,
                             )
                         )
+            snapshot_messages = tuple(
+                {
+                    (message.stream_id, message.message_id): message
+                    for candidate in candidates
+                    for evidence in candidate.evidence
+                    for message in evidence.messages
+                }.values()
+            )
+            await self._evidence.persist_snapshots(session, snapshot_messages)
             if cursor is not None:
                 await self._update_cursor_in_session(session, *cursor)
         return candidate_ids
+
+    async def attach_context_evidence(
+        self,
+        candidate_id: str,
+        messages: tuple[EvidenceMessageInput, ...],
+    ) -> tuple[str, ...]:
+        """为候选新增本次确实引用的上下文消息证据。"""
+        if not candidate_id.strip():
+            raise ValueError("candidate_id 不能为空")
+        unique_messages: list[EvidenceMessageInput] = []
+        seen_keys: set[tuple[str, str]] = set()
+        for message in messages:
+            if not message.stream_id.strip() or not message.message_id.strip():
+                raise ValueError("上下文证据必须指定准确的 stream_id 和 message_id")
+            key = (message.stream_id, message.message_id)
+            if key not in seen_keys:
+                unique_messages.append(message)
+                seen_keys.add(key)
+        if not unique_messages:
+            return ()
+
+        async with self._schema.database.session() as session:
+            if await session.get(CandidateModel, candidate_id) is None:
+                raise ValueError("Candidate 不存在")
+        evidence = EvidenceInput(
+            source_type=EvidenceSourceType.MESSAGE_SET,
+            observed_at=datetime.now(UTC),
+            messages=tuple(unique_messages),
+        )
+        evidence.validate()
+        prepared_evidence = (await self._evidence.prepare_evidence((evidence,)))[0]
+        evidence_id = _new_id()
+        now = datetime.now(UTC)
+        async with self._schema.database.session() as session:
+            await session.execute(text("PRAGMA defer_foreign_keys = ON"))
+            if await session.get(CandidateModel, candidate_id) is None:
+                raise ValueError("Candidate 不存在")
+            existing_keys = {
+                (str(row[0]), str(row[1]))
+                for row in (
+                    await session.execute(
+                        select(
+                            EvidenceMessageLinkModel.stream_id,
+                            EvidenceMessageLinkModel.message_id,
+                        )
+                        .join(
+                            CandidateEvidenceModel,
+                            CandidateEvidenceModel.evidence_id
+                            == EvidenceMessageLinkModel.evidence_id,
+                        )
+                        .where(CandidateEvidenceModel.candidate_id == candidate_id)
+                    )
+                ).all()
+            }
+            prepared_messages = tuple(
+                message
+                for message in prepared_evidence.messages
+                if (message.stream_id, message.message_id) not in existing_keys
+            )
+            await self._evidence.persist_snapshots(
+                session, prepared_evidence.messages
+            )
+            if not prepared_messages:
+                return ()
+            evidence_row = EvidenceModel(
+                evidence_id=evidence_id,
+                source_type=prepared_evidence.source_type,
+                observed_at=prepared_evidence.observed_at,
+                source_ref=prepared_evidence.source_ref,
+                note=prepared_evidence.note,
+                created_at=now,
+            )
+            session.add(evidence_row)
+            await session.flush([evidence_row])
+            session.add(
+                CandidateEvidenceModel(
+                    candidate_id=candidate_id,
+                    evidence_id=evidence_id,
+                )
+            )
+            for ordinal, message in enumerate(prepared_messages):
+                session.add(
+                    EvidenceMessageLinkModel(
+                        evidence_id=evidence_id,
+                        message_id=message.message_id,
+                        stream_id=message.stream_id,
+                        ordinal=ordinal,
+                    )
+                )
+        return (evidence_id,)
 
     async def update_cursor(
         self,
@@ -536,6 +643,47 @@ class SleepSessionService:
                 ).all()
             )
 
+    async def discard_unexecutable_plan(self, plan_key: str, reason: str) -> None:
+        """作废未执行的旧计划，并将已释放的失败候选重新开放。"""
+        now = datetime.now(UTC)
+        async with self._schema.database.session() as session:
+            plan = await session.get(SleepActionPlanModel, plan_key)
+            if plan is None or plan.status not in (OPERATION_PREPARED, OPERATION_EXECUTING):
+                raise ValueError("旧计划不存在或已结束")
+            candidate = await session.get(CandidateModel, plan.candidate_id)
+            old_session = await session.get(SleepSessionModel, plan.sleep_session_id)
+            claim = await session.get(
+                SleepSessionCandidateModel, (plan.sleep_session_id, plan.candidate_id)
+            )
+            if (
+                plan.next_action_index != 0
+                or candidate is None
+                or candidate.status is not CandidateStatus.FAILED
+                or candidate.processing_session_id is not None
+                or old_session is None
+                or old_session.status is SleepSessionStatus.RUNNING
+                or claim is None
+                or claim.released_at is None
+            ):
+                raise ValueError("旧计划可能已有动作或候选仍被认领")
+            for operation_key in plan.operation_keys_json:
+                operation = await session.get(SleepActionOperationModel, operation_key)
+                domain_operation = await session.get(DomainOperationModel, operation_key)
+                if (
+                    operation is None
+                    or operation.status not in (OPERATION_PREPARED, OPERATION_EXECUTING)
+                    or operation.result_json is not None
+                    or domain_operation is not None
+                ):
+                    raise ValueError("旧计划存在已执行的领域动作")
+                operation.status = OPERATION_FAILED
+                operation.error = reason
+                operation.updated_at = now
+            plan.status = OPERATION_FAILED
+            plan.updated_at = now
+            candidate.status = CandidateStatus.PENDING
+            candidate.last_error = reason
+
     async def advance_action_plan(
         self,
         plan_key: str,
@@ -640,6 +788,55 @@ class SleepSessionService:
                 ).all()
             )
 
+    async def discard_stale_operation(
+        self,
+        operation_key: str,
+        reason: str,
+    ) -> bool:
+        """作废已收口候选上没有领域提交或动作审计的孤立操作。"""
+        now = datetime.now(UTC)
+        async with self._schema.database.session() as session:
+            operation = await session.get(SleepActionOperationModel, operation_key)
+            if operation is None or operation.status not in {
+                OPERATION_PREPARED,
+                OPERATION_EXECUTING,
+            }:
+                return False
+            candidate = await session.get(CandidateModel, operation.candidate_id)
+            claim = await session.get(
+                SleepSessionCandidateModel,
+                (operation.sleep_session_id, operation.candidate_id),
+            )
+            action = await session.get(
+                CandidateActionModel,
+                _operation_action_id(operation.operation_key),
+            )
+            if (
+                candidate is None
+                or candidate.status
+                not in {
+                    CandidateStatus.FAILED,
+                    CandidateStatus.RESOLVED,
+                    CandidateStatus.DEFERRED,
+                }
+                or claim is None
+                or claim.released_at is None
+                or action is not None
+            ):
+                return False
+            result = await session.execute(
+                update(SleepActionOperationModel)
+                .where(
+                    SleepActionOperationModel.operation_key == operation_key,
+                    SleepActionOperationModel.status.in_(
+                        (OPERATION_PREPARED, OPERATION_EXECUTING)
+                    ),
+                )
+                .values(status=OPERATION_FAILED, error=reason, updated_at=now)
+                .execution_options(synchronize_session=False)
+            )
+            return result.rowcount == 1
+
     async def complete_operation(
         self,
         operation_key: str,
@@ -743,6 +940,18 @@ class SleepSessionService:
             candidate = await session.get(CandidateModel, operation.candidate_id)
             if candidate is None:
                 raise ValueError("Candidate 不存在")
+            claim = await session.get(
+                SleepSessionCandidateModel,
+                (operation.sleep_session_id, operation.candidate_id),
+            )
+            if claim is None:
+                raise ValueError("Sleep Session Claim 不存在")
+            if (
+                candidate.status is not CandidateStatus.PROCESSING
+                or candidate.processing_session_id != operation.sleep_session_id
+                or claim.released_at is not None
+            ):
+                return
             target_status = (
                 CandidateStatus.DEFERRED
                 if operation.action_type is CandidateActionType.DEFER
@@ -758,11 +967,8 @@ class SleepSessionService:
                 .values(status=target_status, processing_session_id=None)
                 .execution_options(synchronize_session=False)
             )
-            if candidate_result.rowcount == 0 and candidate.status not in {
-                CandidateStatus.RESOLVED,
-                CandidateStatus.DEFERRED,
-            }:
-                raise ValueError("Candidate 已被其他 Session 认领")
+            if candidate_result.rowcount == 0:
+                return
             await session.execute(
                 update(SleepSessionCandidateModel)
                 .where(
@@ -1031,7 +1237,9 @@ class SleepSessionService:
             candidate_count = sleep_session.candidate_count
         return SleepSessionResult(sleep_session_id, status, candidate_count)
 
-    async def recover_abandoned_sessions(self) -> tuple[str, ...]:
+    async def recover_abandoned_sessions(
+        self, *, automatic_since: datetime | None = None
+    ) -> tuple[str, ...]:
         """终结上一次 Runtime 遗留的运行会话并恢复可安全重试的候选。"""
         now = datetime.now(UTC)
         async with self._schema.database.session() as session:
@@ -1039,7 +1247,8 @@ class SleepSessionService:
                 (
                     await session.scalars(
                         select(SleepSessionModel).where(
-                            SleepSessionModel.status == SleepSessionStatus.RUNNING
+                            SleepSessionModel.status == SleepSessionStatus.RUNNING,
+                            *(() if automatic_since is None else (SleepSessionModel.started_at >= automatic_since,)),
                         )
                     )
                 ).all()
@@ -1062,9 +1271,40 @@ class SleepSessionService:
                     running_session.status = SleepSessionStatus.FAILED
                     running_session.finished_at = now
                     running_session.error_summary = "Runtime 中断后恢复遗留会话"
-        return await self.recover_interrupted_candidates()
+        return await self.recover_interrupted_candidates(automatic_since=automatic_since)
 
-    async def recover_interrupted_candidates(self) -> tuple[str, ...]:
+    async def requeue_failed_candidates(
+        self, limit: int, *, automatic_since: datetime | None = None
+    ) -> tuple[str, ...]:
+        """启动时重排尚未形成动作计划的失败候选，保留失败审计。"""
+        async with self._schema.database.session() as session:
+            candidates = tuple((await session.scalars(
+                select(CandidateModel)
+                .where(
+                    CandidateModel.status == CandidateStatus.FAILED,
+                    *(() if automatic_since is None else (CandidateModel.created_at >= automatic_since,)),
+                    ~select(SleepActionPlanModel.plan_key).where(
+                        SleepActionPlanModel.candidate_id == CandidateModel.candidate_id
+                    ).exists(),
+                    ~select(CandidateActionModel.action_id).where(
+                        CandidateActionModel.candidate_id == CandidateModel.candidate_id
+                    ).exists(),
+                    ~select(SleepSessionCandidateModel.candidate_id).where(
+                        SleepSessionCandidateModel.candidate_id == CandidateModel.candidate_id,
+                        SleepSessionCandidateModel.released_at.is_(None),
+                    ).exists(),
+                )
+                .order_by(CandidateModel.created_at, CandidateModel.candidate_id)
+                .limit(limit)
+            )).all())
+            for candidate in candidates:
+                candidate.status = CandidateStatus.PENDING
+                candidate.processing_session_id = None
+            return tuple(candidate.candidate_id for candidate in candidates)
+
+    async def recover_interrupted_candidates(
+        self, *, automatic_since: datetime | None = None
+    ) -> tuple[str, ...]:
         """释放非 RUNNING Session 中无终态动作的 PROCESSING Candidate。"""
         now = datetime.now(UTC)
         recovered: list[str] = []
@@ -1075,6 +1315,7 @@ class SleepSessionService:
                         select(CandidateModel).where(
                             CandidateModel.status == CandidateStatus.PROCESSING,
                             CandidateModel.processing_session_id.is_not(None),
+                            *(() if automatic_since is None else (CandidateModel.created_at >= automatic_since,)),
                         )
                     )
                 ).all()

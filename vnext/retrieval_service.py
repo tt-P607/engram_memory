@@ -21,6 +21,7 @@ from .models import (
     MemoryRevisionParticipantModel,
     MemoryRevisionSubjectModel,
 )
+from .repository import MemoryRepository
 from .schema import VNextSchema
 
 RRF_K = 60
@@ -117,6 +118,14 @@ class VectorSearchBackend:
         """
         raise NotImplementedError
 
+    async def query_scored(
+        self,
+        texts: tuple[tuple[str, str], ...],
+        top_k: int,
+    ) -> tuple[tuple[str, float | None], ...]:
+        """返回入口排位及余弦相似度；仅有排位的后端不提供相关性分。"""
+        return tuple((entry_id, None) for entry_id in await self.query(texts, top_k))
+
 
 class EmbeddingVectorBackend(VectorSearchBackend):
     """基于注入 embedder 的余弦相似度向量检索。"""
@@ -130,7 +139,15 @@ class EmbeddingVectorBackend(VectorSearchBackend):
         texts: tuple[tuple[str, str], ...],
         top_k: int,
     ) -> tuple[str, ...]:
-        """将查询与入口文本共同嵌入并按余弦相似度排序。"""
+        """将查询与入口文本共同嵌入并返回余弦相似度排位。"""
+        return tuple(entry_id for entry_id, _ in await self.query_scored(texts, top_k))
+
+    async def query_scored(
+        self,
+        texts: tuple[tuple[str, str], ...],
+        top_k: int,
+    ) -> tuple[tuple[str, float | None], ...]:
+        """保留查询与入口文本的真实余弦相似度。"""
         if not texts:
             return ()
         query_is_explicit = texts[0][0] == ""
@@ -154,7 +171,7 @@ class EmbeddingVectorBackend(VectorSearchBackend):
             score = self._cosine(query_vector, vector)
             scores.append((score, entry_id))
         scores.sort(key=lambda item: (-item[0], item[1]))
-        return tuple(entry_id for _, entry_id in scores[:top_k])
+        return tuple((entry_id, score) for score, entry_id in scores[:top_k])
 
     @staticmethod
     def _cosine(left: object, right: object) -> float:
@@ -187,32 +204,42 @@ class RetrievalService:
         self._schema = schema
         self._vector_backend = vector_backend
         self._rrf_k = rrf_k
+        self._repository = MemoryRepository(schema)
 
     async def search(
         self,
         query: RetrievalQuery,
         context: WriteContext | None = None,
+        *,
+        min_similarity: float | None = None,
     ) -> tuple[ScoredMemory, ...]:
         """执行三路混合检索并按 memory_id 聚合结果。
 
         参数:
             query: 查询文本、结构化过滤与限制。
             context: 触发检索的执行上下文；非 None 时对命中记录 RECALLED 事件。
+            min_similarity: 在结果限量前过滤未达到余弦相关性门槛的记忆。
 
         返回:
             按 RRF 融合分降序排列的聚合结果元组。
         """
         query.validate()
+        person_ids = await self._resolve_person_ids(query.person_ids)
         async with self._schema.database.session() as session:
             candidates = await self._load_candidates(session)
             if not candidates:
                 return ()
             structured_hits: set[str] = set()
             has_structured = bool(
-                query.person_ids or query.memory_kinds or query.start_time or query.end_time
+                person_ids or query.memory_kinds or query.start_time or query.end_time
             )
             if has_structured:
-                structured_hits = await self._structured_hits(session, query, candidates)
+                structured_hits = await self._structured_hits(
+                    session,
+                    query,
+                    candidates,
+                    person_ids=person_ids,
+                )
                 if not structured_hits:
                     return ()
             lexical = LexicalIndex()
@@ -224,18 +251,23 @@ class RetrievalService:
                 if not structured_hits or entry_id in structured_hits
             )
             try:
-                vector_ranks = await self._vector_backend.query(
+                vector_results = await self._vector_backend.query_scored(
                     (("", query.text),)
                     + tuple((entry.entry_id, entry.text) for entry in candidates),
-                    len(candidates),
+                    min(len(candidates), max(24, query.top_k * 4)),
                 )
             except NotImplementedError:
-                vector_ranks = ()
+                vector_results = ()
             allowed_entry_ids = {entry.entry_id for entry in candidates}
+            vector_similarities = {
+                entry_id: score
+                for entry_id, score in vector_results
+                if entry_id in allowed_entry_ids and score is not None
+            }
             vector_ranks = tuple(
                 dict.fromkeys(
                     entry_id
-                    for entry_id in vector_ranks
+                    for entry_id, _ in vector_results
                     if entry_id in allowed_entry_ids
                 )
             )
@@ -253,17 +285,19 @@ class RetrievalService:
                 self._rrf_k,
             )
             entries_by_id = {entry.entry_id: entry for entry in candidates}
-            anchor_titles = await self._anchor_titles(
+            current_titles = await self._current_titles(
                 session, {entry.memory_id for entry in candidates}
             )
             results = self._aggregate(
                 fused,
                 entries_by_id,
-                anchor_titles,
+                current_titles,
                 lexical_ranks,
                 vector_ranks,
                 structured_hits,
                 query.top_k,
+                vector_similarities,
+                min_similarity,
             )
             for scored in results:
                 await self._record_recall(session, scored, context)
@@ -274,6 +308,8 @@ class RetrievalService:
         session: AsyncSession,
         query: RetrievalQuery,
         candidates: list[MemoryRetrievalEntryModel],
+        *,
+        person_ids: tuple[str, ...] | None = None,
     ) -> set[str]:
         """计算显式结构化条件命中的入口集合（硬过滤语义）。
 
@@ -285,7 +321,8 @@ class RetrievalService:
         if not memory_ids:
             return set()
         person_allowed: set[str] | None = None
-        if query.person_ids:
+        selected_person_ids = query.person_ids if person_ids is None else person_ids
+        if selected_person_ids:
             subject_memories = set(
                 (
                     await session.scalars(
@@ -297,7 +334,7 @@ class RetrievalService:
                         )
                         .where(
                             MemoryModel.memory_id.in_(memory_ids),
-                            MemoryRevisionSubjectModel.person_id.in_(query.person_ids),
+                            MemoryRevisionSubjectModel.person_id.in_(selected_person_ids),
                         )
                     )
                 ).all()
@@ -313,7 +350,7 @@ class RetrievalService:
                         )
                         .where(
                             MemoryModel.memory_id.in_(memory_ids),
-                            MemoryRevisionParticipantModel.person_id.in_(query.person_ids),
+                            MemoryRevisionParticipantModel.person_id.in_(selected_person_ids),
                         )
                     )
                 ).all()
@@ -350,6 +387,15 @@ class RetrievalService:
             entry.entry_id for entry in candidates if entry.memory_id in qualified
         }
 
+    async def _resolve_person_ids(
+        self, person_ids: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        """Expand unique saved-snapshot aliases before structured person filtering."""
+        resolved: list[str] = []
+        for person_id in person_ids:
+            resolved.extend(await self._repository.resolve_person_aliases(person_id))
+        return tuple(dict.fromkeys(resolved))
+
     async def _load_candidates(
         self,
         session: AsyncSession,
@@ -367,31 +413,39 @@ class RetrievalService:
         return candidates
 
     @staticmethod
-    async def _anchor_titles(
+    async def _current_titles(
         session: AsyncSession,
         memory_ids: set[str],
     ) -> dict[str, str]:
-        """读取记忆 anchor_title 映射。"""
+        """读取当前 Revision 标题映射。"""
         if not memory_ids:
             return {}
         rows = tuple(
             (await session.execute(
-                select(MemoryModel.memory_id, MemoryModel.anchor_title).where(
-                    MemoryModel.memory_id.in_(memory_ids)
+                select(MemoryModel.memory_id, MemoryRevisionModel.title)
+                .join(
+                    MemoryRevisionModel,
+                    MemoryRevisionModel.revision_id == MemoryModel.current_revision_id,
+                )
+                .where(
+                    MemoryModel.memory_id.in_(memory_ids),
+                    MemoryModel.status == MemoryStatus.ACTIVE,
                 )
             )).all()
         )
-        return {row.memory_id: row.anchor_title for row in rows}
+        return {row.memory_id: row.title for row in rows}
 
     @staticmethod
     def _aggregate(
         fused: tuple[tuple[str, float], ...],
         entries_by_id: dict[str, MemoryRetrievalEntryModel],
-        anchor_titles: dict[str, str],
+        current_titles: dict[str, str],
         lexical_ranks: tuple[str, ...],
         vector_ranks: tuple[str, ...],
         structured_hits: set[str],
         top_k: int,
+        vector_similarities: dict[str, float] | None = None,
+        min_similarity: float | None = None,
     ) -> tuple[ScoredMemory, ...]:
         """按 memory_id 聚合入口级融合结果。
 
@@ -402,10 +456,16 @@ class RetrievalService:
         vector_positions = {entry_id: rank for rank, entry_id in enumerate(vector_ranks)}
         memory_scores: dict[str, float] = defaultdict(float)
         memory_sources: dict[str, set[str]] = defaultdict(set)
+        memory_similarities: dict[str, float] = {}
         best_lexical: dict[str, int | None] = {}
         best_vector: dict[str, int | None] = {}
         for entry_id, score in fused:
             entry = entries_by_id[entry_id]
+            similarity = (vector_similarities or {}).get(entry_id)
+            if similarity is not None:
+                memory_similarities[entry.memory_id] = max(
+                    memory_similarities.get(entry.memory_id, -1.0), similarity
+                )
             memory_scores[entry.memory_id] += score
             if entry_id in lexical_positions or entry_id in vector_positions:
                 memory_sources[entry.memory_id].add(entry.entry_type.value)
@@ -430,17 +490,23 @@ class RetrievalService:
             if memory in memory_scores:
                 memory_sources[memory].add("STRUCTURED")
         ordered = sorted(
-            memory_scores.items(),
+            (
+                (memory_id, score)
+                for memory_id, score in memory_scores.items()
+                if min_similarity is None
+                or memory_similarities.get(memory_id, -1.0) >= min_similarity
+            ),
             key=lambda item: (-item[1], item[0]),
         )
         return tuple(
             ScoredMemory(
                 memory_id=memory_id,
-                anchor_title=anchor_titles.get(memory_id, ""),
+                title=current_titles.get(memory_id, ""),
                 matched_by=tuple(sorted(memory_sources[memory_id])),
                 rrf_score=score,
                 lexical_rank=best_lexical.get(memory_id),
                 vector_rank=best_vector.get(memory_id),
+                vector_similarity=memory_similarities.get(memory_id),
             )
             for memory_id, score in ordered[:top_k]
         )
@@ -466,7 +532,7 @@ class RetrievalService:
                 occurred_at=datetime.now(UTC),
                 payload_json={
                     "matched_by": list(scored.matched_by),
-                    "anchor_title": scored.anchor_title,
+                    "title": scored.title,
                 },
             )
         )
