@@ -11,12 +11,12 @@ from sqlalchemy import (
     Enum as SqlEnum,
     Float,
     ForeignKey,
-    func,
     Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    func,
     event,
     text,
 )
@@ -28,11 +28,6 @@ from .enums import (
     CandidateActionTargetRole,
     CandidateActionType,
     CandidateStatus,
-    ClaimBasis,
-    ConfidenceLevel,
-    EventTimeOrigin,
-    EventTimePrecision,
-    EvidenceRole,
     EvidenceSourceType,
     MemoryEventType,
     MemoryKind,
@@ -41,16 +36,12 @@ from .enums import (
     OutboxOperation,
     OutboxStatus,
     ParticipantKind,
-    ParticipantRole,
-    ProvenanceQuality,
     RelationType,
     RetrievalEntryType,
     RevisionChangeReason,
-    SalienceLevel,
     SleepCandidateOutcome,
     SleepSessionStatus,
     SleepTriggerType,
-    StabilityLevel,
     SubjectKind,
     VectorIndexStatus,
 )
@@ -114,20 +105,10 @@ class MemoryModel(Base):
     status: Mapped[MemoryStatus] = mapped_column(
         _enum(MemoryStatus, "engram_vnext_memory_status"), nullable=False
     )
-    anchor_title: Mapped[str] = mapped_column(Text, nullable=False)
     current_revision_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey(
             "engram_vnext_memory_revision.revision_id",
-            deferrable=True,
-            initially="DEFERRED",
-        ),
-        nullable=False,
-    )
-    current_assessment_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey(
-            "engram_vnext_memory_assessment.assessment_id",
             deferrable=True,
             initially="DEFERRED",
         ),
@@ -164,19 +145,7 @@ class MemoryRevisionModel(Base):
     memory_kind: Mapped[MemoryKind] = mapped_column(
         _enum(MemoryKind, "engram_vnext_memory_kind"), nullable=False
     )
-    confidence: Mapped[ConfidenceLevel] = mapped_column(
-        _enum(ConfidenceLevel, "engram_vnext_confidence"), nullable=False
-    )
-    confidence_reason: Mapped[str] = mapped_column(Text, nullable=False)
     observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
-    event_start_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
-    event_end_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
-    event_time_precision: Mapped[EventTimePrecision] = mapped_column(
-        _enum(EventTimePrecision, "engram_vnext_event_time_precision"), nullable=False
-    )
-    event_time_origin: Mapped[EventTimeOrigin] = mapped_column(
-        _enum(EventTimeOrigin, "engram_vnext_event_time_origin"), nullable=False
-    )
     change_reason: Mapped[RevisionChangeReason] = mapped_column(
         _enum(RevisionChangeReason, "engram_vnext_revision_change_reason"), nullable=False
     )
@@ -189,10 +158,6 @@ class MemoryRevisionModel(Base):
     __table_args__ = (
         UniqueConstraint("memory_id", "revision_no", name="uq_engram_vnext_revision_no"),
         CheckConstraint("revision_no >= 1", name="ck_engram_vnext_revision_positive"),
-        CheckConstraint(
-            "event_end_at IS NULL OR event_start_at IS NOT NULL",
-            name="ck_engram_vnext_revision_event_range_start",
-        ),
         Index("idx_engram_vnext_revision_memory", "memory_id"),
         Index("idx_engram_vnext_revision_kind", "memory_kind"),
     )
@@ -236,9 +201,6 @@ class MemoryRevisionParticipantModel(Base):
     )
     person_id: Mapped[str | None] = mapped_column(Text)
     label: Mapped[str | None] = mapped_column(Text)
-    role: Mapped[ParticipantRole] = mapped_column(
-        _enum(ParticipantRole, "engram_vnext_participant_role"), nullable=False
-    )
 
     __table_args__ = (
         CheckConstraint(
@@ -259,12 +221,6 @@ class EvidenceModel(Base):
     source_type: Mapped[EvidenceSourceType] = mapped_column(
         _enum(EvidenceSourceType, "engram_vnext_evidence_source_type"), nullable=False
     )
-    claim_basis: Mapped[ClaimBasis] = mapped_column(
-        _enum(ClaimBasis, "engram_vnext_claim_basis"), nullable=False
-    )
-    provenance_quality: Mapped[ProvenanceQuality] = mapped_column(
-        _enum(ProvenanceQuality, "engram_vnext_provenance_quality"), nullable=False
-    )
     observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     source_ref: Mapped[str | None] = mapped_column(Text)
     note: Mapped[str | None] = mapped_column(Text)
@@ -279,14 +235,26 @@ class EvidenceMessageLinkModel(Base):
     evidence_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("engram_vnext_evidence.evidence_id"), primary_key=True
     )
+    stream_id: Mapped[str] = mapped_column(Text, primary_key=True)
     message_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    stream_id: Mapped[str] = mapped_column(Text, nullable=False)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
 
     __table_args__ = (
         CheckConstraint("ordinal >= 0", name="ck_engram_vnext_evidence_ordinal"),
         Index("idx_engram_vnext_evidence_message_stream", "stream_id"),
     )
+
+
+class EvidenceMessageSnapshotModel(Base):
+    """按来源流与消息标识保存首次读取的原始消息快照。"""
+
+    __tablename__ = "engram_vnext_evidence_message_snapshot"
+
+    stream_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    message_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    redacted_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class RevisionEvidenceModel(Base):
@@ -300,37 +268,7 @@ class RevisionEvidenceModel(Base):
     evidence_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("engram_vnext_evidence.evidence_id"), primary_key=True
     )
-    evidence_role: Mapped[EvidenceRole] = mapped_column(
-        _enum(EvidenceRole, "engram_vnext_evidence_role"), primary_key=True
-    )
     linked_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
-
-
-class MemoryAssessmentModel(Base):
-    """正式记忆不可变认知评估。"""
-
-    __tablename__ = "engram_vnext_memory_assessment"
-
-    assessment_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    memory_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("engram_vnext_memory.memory_id"), nullable=False
-    )
-    based_on_revision_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("engram_vnext_memory_revision.revision_id"), nullable=False
-    )
-    stability: Mapped[StabilityLevel] = mapped_column(
-        _enum(StabilityLevel, "engram_vnext_stability"), nullable=False
-    )
-    salience: Mapped[SalienceLevel] = mapped_column(
-        _enum(SalienceLevel, "engram_vnext_salience"), nullable=False
-    )
-    reason: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
-    created_by_type: Mapped[ActorType] = mapped_column(
-        _enum(ActorType, "engram_vnext_assessment_creator_type"), nullable=False
-    )
-
-    __table_args__ = (Index("idx_engram_vnext_assessment_memory", "memory_id"),)
 
 
 class MemoryRelationModel(Base):
@@ -401,14 +339,6 @@ class CandidateModel(Base):
     proposed_kind: Mapped[MemoryKind | None] = mapped_column(
         _enum(MemoryKind, "engram_vnext_candidate_kind")
     )
-    confidence_hint: Mapped[ConfidenceLevel | None] = mapped_column(
-        _enum(ConfidenceLevel, "engram_vnext_candidate_confidence")
-    )
-    salience_hint: Mapped[SalienceLevel | None] = mapped_column(
-        _enum(SalienceLevel, "engram_vnext_candidate_salience")
-    )
-    retention_reason: Mapped[str] = mapped_column(Text, nullable=False)
-    uncertainty_note: Mapped[str | None] = mapped_column(Text)
     observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     processing_session_id: Mapped[str | None] = mapped_column(
@@ -469,9 +399,6 @@ class CandidateParticipantModel(Base):
     )
     person_id: Mapped[str | None] = mapped_column(Text)
     label: Mapped[str | None] = mapped_column(Text)
-    role: Mapped[ParticipantRole] = mapped_column(
-        _enum(ParticipantRole, "engram_vnext_candidate_participant_role"), nullable=False
-    )
 
     __table_args__ = (
         CheckConstraint(
@@ -698,21 +625,6 @@ class DomainOperationModel(Base):
     )
 
 
-class PersonPersonaModel(Base):
-    """由正式记忆派生的当前人物印象。"""
-
-    __tablename__ = "engram_vnext_person_persona"
-
-    person_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    impression_text: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
-    last_sleep_session_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("engram_vnext_sleep_session.sleep_session_id")
-    )
-    content_hash: Mapped[str] = mapped_column(Text, nullable=False)
-
-
 class PersonaUpdateLogModel(Base):
     """人物印象更新审计日志。"""
 
@@ -845,7 +757,6 @@ IMMUTABLE_MODELS: ClassVar[tuple[type[Base], ...]] = (
     EvidenceModel,
     EvidenceMessageLinkModel,
     RevisionEvidenceModel,
-    MemoryAssessmentModel,
     CandidateActionModel,
     CandidateActionTargetModel,
     MemoryEventModel,
@@ -873,8 +784,8 @@ ALL_MODELS: tuple[type[Base], ...] = tuple(Base.metadata.tables) and (
     MemoryRevisionParticipantModel,
     EvidenceModel,
     EvidenceMessageLinkModel,
+    EvidenceMessageSnapshotModel,
     RevisionEvidenceModel,
-    MemoryAssessmentModel,
     MemoryRelationModel,
     CandidateModel,
     CandidateEvidenceModel,
@@ -889,7 +800,6 @@ ALL_MODELS: tuple[type[Base], ...] = tuple(Base.metadata.tables) and (
     SleepSessionCandidateModel,
     MemoryEventModel,
     DomainOperationModel,
-    PersonPersonaModel,
     PersonaUpdateLogModel,
     PersonaUpdateMemoryModel,
     MemoryRetrievalEntryModel,

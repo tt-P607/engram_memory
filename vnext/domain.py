@@ -7,18 +7,9 @@ from datetime import datetime
 
 from .enums import (
     ActorType,
-    ClaimBasis,
-    ConfidenceLevel,
-    EvidenceRole,
-    EventTimeOrigin,
-    EventTimePrecision,
     EvidenceSourceType,
     MemoryKind,
     ParticipantKind,
-    ParticipantRole,
-    ProvenanceQuality,
-    SalienceLevel,
-    StabilityLevel,
     SubjectKind,
     RevisionChangeReason,
     RelationType,
@@ -51,7 +42,6 @@ class ParticipantInput:
     """记忆版本参与者输入。"""
 
     participant_kind: ParticipantKind
-    role: ParticipantRole
     person_id: str | None = None
     label: str | None = None
 
@@ -67,6 +57,7 @@ class EvidenceMessageInput:
 
     message_id: str
     stream_id: str
+    snapshot: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,13 +65,10 @@ class EvidenceInput:
     """正式记忆写入所需的证据输入。"""
 
     source_type: EvidenceSourceType
-    claim_basis: ClaimBasis
-    provenance_quality: ProvenanceQuality
     observed_at: datetime
     messages: tuple[EvidenceMessageInput, ...] = ()
     source_ref: str | None = None
     note: str | None = None
-    evidence_role: EvidenceRole = EvidenceRole.SUPPORT
 
     def validate(self) -> None:
         """验证消息证据拥有消息引用且引用不重复。"""
@@ -95,33 +83,20 @@ class EvidenceInput:
 class CreateMemoryInput:
     """创建正式记忆及初始认知状态的输入。"""
 
-    anchor_title: str
     title: str
     content: str
     memory_kind: MemoryKind
     subject: SubjectInput
-    confidence: ConfidenceLevel
-    confidence_reason: str
     observed_at: datetime
-    event_time_precision: EventTimePrecision
-    event_time_origin: EventTimeOrigin
-    stability: StabilityLevel
-    salience: SalienceLevel
-    assessment_reason: str
     evidence: tuple[EvidenceInput, ...] = ()
     evidence_ids: tuple[str, ...] = ()
     participants: tuple[ParticipantInput, ...] = ()
-    event_start_at: datetime | None = None
-    event_end_at: datetime | None = None
 
     def validate(self) -> None:
         """验证正式记忆创建所需的领域完整性。"""
         required_text = {
-            "anchor_title": self.anchor_title,
             "title": self.title,
             "content": self.content,
-            "confidence_reason": self.confidence_reason,
-            "assessment_reason": self.assessment_reason,
         }
         for field_name, value in required_text.items():
             if not value.strip():
@@ -130,27 +105,11 @@ class CreateMemoryInput:
             raise ValueError("正式记忆必须至少关联一份 Evidence")
         if len(set(self.evidence_ids)) != len(self.evidence_ids):
             raise ValueError("evidence_ids 不能重复")
-        if self.event_end_at is not None and self.event_start_at is None:
-            raise ValueError("event_end_at 存在时必须提供 event_start_at")
         self.subject.validate()
         for participant in self.participants:
             participant.validate()
         for evidence in self.evidence:
             evidence.validate()
-
-
-@dataclass(frozen=True, slots=True)
-class AssessmentInput:
-    """追加认知评估输入。"""
-
-    stability: StabilityLevel
-    salience: SalienceLevel
-    reason: str
-
-    def validate(self) -> None:
-        """验证评估原因非空。"""
-        if not self.reason.strip():
-            raise ValueError("assessment reason 不能为空")
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +121,6 @@ class ReinforceMemoryInput:
     reason: str
     evidence: tuple[EvidenceInput, ...] = ()
     evidence_ids: tuple[str, ...] = ()
-    assessment: AssessmentInput | None = None
 
     def validate(self) -> None:
         """验证强化不缺少目标、原因或新增证据。"""
@@ -176,8 +134,6 @@ class ReinforceMemoryInput:
             raise ValueError("evidence_ids 不能重复")
         for evidence in self.evidence:
             evidence.validate()
-        if self.assessment is not None:
-            self.assessment.validate()
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,19 +146,11 @@ class ReviseMemoryInput:
     content: str
     memory_kind: MemoryKind
     subject: SubjectInput
-    confidence: ConfidenceLevel
-    confidence_reason: str
     observed_at: datetime
-    event_time_precision: EventTimePrecision
-    event_time_origin: EventTimeOrigin
     change_reason: RevisionChangeReason
-    assessment: AssessmentInput
     evidence: tuple[EvidenceInput, ...] = ()
     evidence_ids: tuple[str, ...] = ()
     participants: tuple[ParticipantInput, ...] = ()
-    event_start_at: datetime | None = None
-    event_end_at: datetime | None = None
-    new_anchor_title: str | None = None
 
     def validate(self) -> None:
         """验证线性修订所需的语义内容与证据。"""
@@ -211,7 +159,6 @@ class ReviseMemoryInput:
         for field_name, value in {
             "title": self.title,
             "content": self.content,
-            "confidence_reason": self.confidence_reason,
         }.items():
             if not value.strip():
                 raise ValueError(f"{field_name} 不能为空")
@@ -221,12 +168,7 @@ class ReviseMemoryInput:
             raise ValueError("修订必须提供 Evidence")
         if len(set(self.evidence_ids)) != len(self.evidence_ids):
             raise ValueError("evidence_ids 不能重复")
-        if self.event_end_at is not None and self.event_start_at is None:
-            raise ValueError("event_end_at 存在时必须提供 event_start_at")
-        if self.new_anchor_title is not None and not self.new_anchor_title.strip():
-            raise ValueError("new_anchor_title 不能为空")
         self.subject.validate()
-        self.assessment.validate()
         for participant in self.participants:
             participant.validate()
         for evidence in self.evidence:
@@ -261,6 +203,7 @@ class MergeMemoryInput:
     reason: str = ""
     mode: str = "EXISTING_CANONICAL"
     new_memory: CreateMemoryInput | None = None
+    evidence_ids: tuple[str, ...] = ()
 
     def validate(self) -> None:
         """验证合并至少包含一个不同于 Canonical 的来源。"""
@@ -276,6 +219,12 @@ class MergeMemoryInput:
             raise ValueError("Canonical Memory 不能同时作为 Merge Source")
         if len(set(self.source_memory_ids)) != len(self.source_memory_ids):
             raise ValueError("source_memory_ids 不能重复")
+        if any(not isinstance(item, str) or not item.strip() for item in self.evidence_ids):
+            raise ValueError("evidence_ids 必须包含非空 ID")
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("evidence_ids 不能重复")
+        if self.mode == "NEW_CANONICAL" and self.evidence_ids:
+            raise ValueError("NEW_CANONICAL 的 Evidence 必须通过 new_memory 指定")
         if not self.reason.strip():
             raise ValueError("merge reason 不能为空")
         if self.new_memory is not None:
@@ -288,13 +237,9 @@ class CandidateInput:
 
     rough_title: str
     rough_content: str
-    retention_reason: str
     observed_at: datetime
     evidence: tuple[EvidenceInput, ...]
     proposed_kind: MemoryKind | None = None
-    confidence_hint: ConfidenceLevel | None = None
-    salience_hint: SalienceLevel | None = None
-    uncertainty_note: str | None = None
     subject: SubjectInput | None = None
     participants: tuple[ParticipantInput, ...] = ()
 
@@ -303,7 +248,6 @@ class CandidateInput:
         for field_name, value in {
             "rough_title": self.rough_title,
             "rough_content": self.rough_content,
-            "retention_reason": self.retention_reason,
         }.items():
             if not value.strip():
                 raise ValueError(f"{field_name} 不能为空")
@@ -470,11 +414,12 @@ class ScoredMemory:
     """单条正式记忆按 memory_id 聚合后的融合检索结果。"""
 
     memory_id: str
-    anchor_title: str
+    title: str
     matched_by: tuple[str, ...]
     rrf_score: float
     lexical_rank: int | None
     vector_rank: int | None
+    vector_similarity: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -513,5 +458,4 @@ class MemoryWriteResult:
 
     memory_id: str
     revision_id: str
-    assessment_id: str
     evidence_ids: tuple[str, ...] = field(default_factory=tuple)

@@ -37,8 +37,8 @@ from .models import (
     CandidateEvidenceModel,
     CandidateModel,
     EvidenceMessageLinkModel,
+    EvidenceMessageSnapshotModel,
     EvidenceModel,
-    MemoryAssessmentModel,
     MemoryModel,
     MemoryRelationModel,
     MemoryRetrievalEntryModel,
@@ -57,7 +57,6 @@ _ModelT = TypeVar("_ModelT")
 
 _CORE_ENTRY_TYPES = frozenset(
     {
-        RetrievalEntryType.ANCHOR,
         RetrievalEntryType.CURRENT_REVISION,
         RetrievalEntryType.HISTORICAL_REVISION,
     }
@@ -123,10 +122,10 @@ class _CanonicalSnapshot:
     memories: tuple[MemoryModel, ...]
     revisions: tuple[MemoryRevisionModel, ...]
     subjects: tuple[MemoryRevisionSubjectModel, ...]
-    assessments: tuple[MemoryAssessmentModel, ...]
     evidence: tuple[EvidenceModel, ...]
     revision_evidence: tuple[RevisionEvidenceModel, ...]
     evidence_links: tuple[EvidenceMessageLinkModel, ...]
+    evidence_snapshots: tuple[EvidenceMessageSnapshotModel, ...]
     candidate_evidence: tuple[CandidateEvidenceModel, ...]
     relations: tuple[MemoryRelationModel, ...]
     candidates: tuple[CandidateModel, ...]
@@ -319,7 +318,6 @@ class DoctorService:
                 if current is None:
                     continue
                 expected = _expected_entries(
-                    memory,
                     revisions_by_memory.get(memory_id, ()),
                     current,
                 )
@@ -406,10 +404,10 @@ class DoctorService:
             memories=await _all(session, MemoryModel),
             revisions=await _all(session, MemoryRevisionModel),
             subjects=await _all(session, MemoryRevisionSubjectModel),
-            assessments=await _all(session, MemoryAssessmentModel),
             evidence=await _all(session, EvidenceModel),
             revision_evidence=await _all(session, RevisionEvidenceModel),
             evidence_links=await _all(session, EvidenceMessageLinkModel),
+            evidence_snapshots=await _all(session, EvidenceMessageSnapshotModel),
             candidate_evidence=await _all(session, CandidateEvidenceModel),
             relations=await _all(session, MemoryRelationModel),
             candidates=await _all(session, CandidateModel),
@@ -424,9 +422,9 @@ class DoctorService:
         """按固定顺序检查 Canonical 与派生数据。"""
         issues: list[DoctorIssue] = []
         issues.extend(_check_current_pointers(snapshot))
-        issues.extend(_check_assessments(snapshot))
         issues.extend(_check_revisions(snapshot))
         issues.extend(_check_evidence(snapshot))
+        issues.extend(_check_evidence_snapshots(snapshot))
         issues.extend(_check_merge_cycles(snapshot))
         issues.extend(_check_stuck_candidates(snapshot))
         issues.extend(_check_retrieval_entries(snapshot))
@@ -827,9 +825,8 @@ async def _all(session: AsyncSession, model: type[_ModelT]) -> tuple[_ModelT, ..
 
 
 def _check_current_pointers(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
-    """检查 Memory 当前 Revision/Assessment 指针及归属。"""
+    """检查 Memory 当前 Revision 指针及归属。"""
     revisions = {row.revision_id: row for row in snapshot.revisions}
-    assessments = {row.assessment_id: row for row in snapshot.assessments}
     issues: list[DoctorIssue] = []
     for memory in snapshot.memories:
         revision = revisions.get(memory.current_revision_id)
@@ -850,66 +847,6 @@ def _check_current_pointers(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
                 )
             )
 
-        assessment = assessments.get(memory.current_assessment_id)
-        if assessment is None:
-            issues.append(
-                _issue(
-                    "CURRENT_ASSESSMENT_DANGLING",
-                    memory.memory_id,
-                    f"current_assessment_id={memory.current_assessment_id!r} 不存在",
-                )
-            )
-        elif assessment.memory_id != memory.memory_id:
-            issues.append(
-                _issue(
-                    "CURRENT_ASSESSMENT_OWNERSHIP",
-                    memory.memory_id,
-                    f"当前 Assessment {assessment.assessment_id} 属于 Memory {assessment.memory_id}",
-                )
-            )
-        elif revision is not None and assessment.based_on_revision_id != revision.revision_id:
-            issues.append(
-                _issue(
-                    "CURRENT_ASSESSMENT_REVISION_DRIFT",
-                    memory.memory_id,
-                    f"当前 Assessment 基于 Revision {assessment.based_on_revision_id}，"
-                    f"当前 Revision 为 {revision.revision_id}",
-                )
-            )
-    return issues
-
-
-def _check_assessments(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
-    """检查 Assessment 的 Memory 与 based Revision 内链。"""
-    memory_ids = {row.memory_id for row in snapshot.memories}
-    revisions = {row.revision_id: row for row in snapshot.revisions}
-    issues: list[DoctorIssue] = []
-    for assessment in snapshot.assessments:
-        if assessment.memory_id not in memory_ids:
-            issues.append(
-                _issue(
-                    "ASSESSMENT_MEMORY_OWNERSHIP",
-                    assessment.assessment_id,
-                    f"Assessment 指向不存在的 Memory {assessment.memory_id}",
-                )
-            )
-        revision = revisions.get(assessment.based_on_revision_id)
-        if revision is None:
-            issues.append(
-                _issue(
-                    "ASSESSMENT_REVISION_DANGLING",
-                    assessment.assessment_id,
-                    f"based_on_revision_id={assessment.based_on_revision_id!r} 不存在",
-                )
-            )
-        elif revision.memory_id != assessment.memory_id:
-            issues.append(
-                _issue(
-                    "ASSESSMENT_REVISION_OWNERSHIP",
-                    assessment.assessment_id,
-                    f"Assessment 的 Revision 属于 Memory {revision.memory_id}",
-                )
-            )
     return issues
 
 
@@ -1136,6 +1073,86 @@ def _check_evidence(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
     return issues
 
 
+def _check_evidence_snapshots(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
+    """Check linked source snapshots for availability and required structure.
+
+    This validates only the stored snapshot's local shape and link identity; it
+    cannot establish that an external message or its content is authentic.
+    """
+    snapshots = {
+        (row.stream_id, row.message_id): row
+        for row in snapshot.evidence_snapshots
+    }
+    issues: list[DoctorIssue] = []
+    for link in snapshot.evidence_links:
+        source = snapshots.get((link.stream_id, link.message_id))
+        if source is None:
+            issues.append(
+                _issue(
+                    "EVIDENCE_SNAPSHOT_MISSING",
+                    link.evidence_id,
+                    "消息软引用没有对应的长期来源快照",
+                )
+            )
+            continue
+        payload = source.payload
+        if source.redacted_at is not None or (
+            isinstance(payload, dict) and payload.get("redacted") is True
+        ):
+            issues.append(
+                _issue(
+                    "EVIDENCE_SNAPSHOT_REDACTED",
+                    link.evidence_id,
+                    "来源快照已标记隐私删除，内容不可读",
+                )
+            )
+            continue
+        if not isinstance(payload, dict):
+            issues.append(
+                _issue(
+                    "EVIDENCE_SNAPSHOT_INVALID",
+                    link.evidence_id,
+                    "来源快照不是 JSON 对象",
+                )
+            )
+            continue
+        reference = (
+            str(payload.get("stream_id") or ""),
+            str(payload.get("message_id") or ""),
+        )
+        if reference != (link.stream_id, link.message_id):
+            issues.append(
+                _issue(
+                    "EVIDENCE_SNAPSHOT_REFERENCE_MISMATCH",
+                    link.evidence_id,
+                    "来源快照标识与消息软引用不一致",
+                )
+            )
+            continue
+        missing_fields: list[str] = []
+        if payload.get("time") is None:
+            missing_fields.append("time")
+        if not any(
+            payload.get(field)
+            for field in ("sender_id", "person_id", "sender_name", "speaker")
+        ):
+            missing_fields.append("sender")
+        if not any(
+            payload.get(field)
+            for field in ("processed_plain_text", "content", "text")
+        ):
+            missing_fields.append("message_text")
+        if missing_fields:
+            issues.append(
+                _issue(
+                    "EVIDENCE_SNAPSHOT_FIELDS_MISSING",
+                    link.evidence_id,
+                    "来源快照缺少必要字段: " + ", ".join(missing_fields),
+                )
+            )
+    return issues
+
+
 def _check_merge_cycles(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
     """检查未撤回 MERGED_INTO 关系是否形成有向环。"""
     memory_ids = {row.memory_id for row in snapshot.memories}
@@ -1253,10 +1270,7 @@ def _check_retrieval_entries(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
             continue
 
         structural_issue = False
-        if entry.entry_type == RetrievalEntryType.ANCHOR:
-            if entry.revision_id is not None:
-                structural_issue = True
-        elif entry.entry_type in _REVISION_ENTRY_TYPES:
+        if entry.entry_type in _REVISION_ENTRY_TYPES:
             if entry.revision_id is None:
                 structural_issue = True
             else:
@@ -1301,7 +1315,6 @@ def _check_retrieval_entries(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
         expected_by_key = {
             (item[0], item[1]): item[2]
             for item in _expected_entries(
-                memory,
                 revisions_by_memory.get(memory.memory_id, ()),
                 current,
             )
@@ -1334,7 +1347,6 @@ def _check_retrieval_entries(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
         if current is None:
             continue
         expected = _expected_entries(
-            memory,
             revisions_by_memory.get(memory_id, ()),
             current,
         )
@@ -1508,14 +1520,11 @@ def _revisions_by_memory(
 
 
 def _expected_entries(
-    memory: MemoryModel,
     revisions: Iterable[MemoryRevisionModel],
     current: MemoryRevisionModel,
 ) -> tuple[tuple[RetrievalEntryType, str | None, str], ...]:
-    """从稳定锚点和完整 Revision 历史生成核心入口集合。"""
-    expected: list[tuple[RetrievalEntryType, str | None, str]] = [
-        (RetrievalEntryType.ANCHOR, None, memory.anchor_title)
-    ]
+    """从完整 Revision 历史生成核心入口集合。"""
+    expected: list[tuple[RetrievalEntryType, str | None, str]] = []
     for revision in revisions:
         entry_type = (
             RetrievalEntryType.CURRENT_REVISION

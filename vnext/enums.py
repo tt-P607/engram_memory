@@ -25,53 +25,6 @@ class MemoryKind(StrEnum):
     SOCIAL_PATTERN = "SOCIAL_PATTERN"
 
 
-class ConfidenceLevel(StrEnum):
-    """当前版本的认知置信等级。"""
-
-    LOW = "LOW"
-    MEDIUM = "MEDIUM"
-    HIGH = "HIGH"
-    VERY_HIGH = "VERY_HIGH"
-
-
-class StabilityLevel(StrEnum):
-    """当前记忆认知稳定等级。"""
-
-    LOW = "LOW"
-    MEDIUM = "MEDIUM"
-    HIGH = "HIGH"
-    VERY_HIGH = "VERY_HIGH"
-
-
-class SalienceLevel(StrEnum):
-    """记忆深刻度等级。"""
-
-    LOW = "LOW"
-    MEDIUM = "MEDIUM"
-    HIGH = "HIGH"
-    VERY_HIGH = "VERY_HIGH"
-
-
-class EventTimePrecision(StrEnum):
-    """事件时间精度。"""
-
-    EXACT = "EXACT"
-    DAY = "DAY"
-    APPROXIMATE = "APPROXIMATE"
-    RANGE = "RANGE"
-    UNKNOWN = "UNKNOWN"
-
-
-class EventTimeOrigin(StrEnum):
-    """事件时间来源。"""
-
-    SOURCE_EXPLICIT = "SOURCE_EXPLICIT"
-    SOURCE_RELATIVE_RESOLVED = "SOURCE_RELATIVE_RESOLVED"
-    RECONSTRUCTED_FROM_EVIDENCE = "RECONSTRUCTED_FROM_EVIDENCE"
-    LLM_INFERRED = "LLM_INFERRED"
-    UNKNOWN = "UNKNOWN"
-
-
 class RevisionChangeReason(StrEnum):
     """记忆版本变化原因。"""
 
@@ -106,16 +59,6 @@ class ParticipantKind(StrEnum):
     OTHER = "OTHER"
 
 
-class ParticipantRole(StrEnum):
-    """记忆参与者角色。"""
-
-    INITIATOR = "INITIATOR"
-    PARTICIPANT = "PARTICIPANT"
-    RECIPIENT = "RECIPIENT"
-    OBSERVER = "OBSERVER"
-    MENTIONED = "MENTIONED"
-
-
 class EvidenceSourceType(StrEnum):
     """证据来源类型。"""
 
@@ -125,37 +68,6 @@ class EvidenceSourceType(StrEnum):
     LEGACY_RECORD = "LEGACY_RECORD"
     ADMIN = "ADMIN"
     EXTERNAL = "EXTERNAL"
-
-
-class ClaimBasis(StrEnum):
-    """证据所支持主张的形成基础。"""
-
-    DIRECT_STATEMENT = "DIRECT_STATEMENT"
-    OBSERVED_BEHAVIOR = "OBSERVED_BEHAVIOR"
-    THIRD_PARTY_STATEMENT = "THIRD_PARTY_STATEMENT"
-    BOT_INFERENCE = "BOT_INFERENCE"
-    SYSTEM_EVENT = "SYSTEM_EVENT"
-    EXPLICIT_MEMORY_WRITE = "EXPLICIT_MEMORY_WRITE"
-    LEGACY_IMPORT = "LEGACY_IMPORT"
-    ADMIN_ASSERTION = "ADMIN_ASSERTION"
-
-
-class ProvenanceQuality(StrEnum):
-    """证据来源追踪质量。"""
-
-    EXACT = "EXACT"
-    HIGH = "HIGH"
-    AMBIGUOUS = "AMBIGUOUS"
-    UNKNOWN = "UNKNOWN"
-
-
-class EvidenceRole(StrEnum):
-    """证据与记忆版本之间的作用。"""
-
-    SUPPORT = "SUPPORT"
-    CONTRADICT = "CONTRADICT"
-    CONTEXT = "CONTEXT"
-    CORRECTION_SOURCE = "CORRECTION_SOURCE"
 
 
 class RelationType(StrEnum):
@@ -257,7 +169,6 @@ class ActorType(StrEnum):
 class RetrievalEntryType(StrEnum):
     """可重建检索入口类型。"""
 
-    ANCHOR = "ANCHOR"
     CURRENT_REVISION = "CURRENT_REVISION"
     HISTORICAL_REVISION = "HISTORICAL_REVISION"
     TAG = "TAG"
