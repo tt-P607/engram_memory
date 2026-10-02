@@ -637,10 +637,17 @@ class PersonaUpdateLogModel(Base):
     )
     old_content_hash: Mapped[str] = mapped_column(Text, nullable=False)
     new_content_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    generator_version: Mapped[str | None] = mapped_column(Text)
+    revision_no: Mapped[int | None] = mapped_column(Integer)
+    impression_text: Mapped[str | None] = mapped_column(Text)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
-    __table_args__ = (Index("idx_engram_vnext_persona_log_person", "person_id", "created_at"),)
+    __table_args__ = (
+        Index("idx_engram_vnext_persona_log_person", "person_id", "created_at"),
+        Index("uq_engram_vnext_persona_revision", "person_id", "revision_no", unique=True),
+        CheckConstraint("revision_no >= 1", name="ck_engram_vnext_persona_revision_positive"),
+    )
 
 
 class PersonaUpdateMemoryModel(Base):

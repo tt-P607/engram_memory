@@ -16,7 +16,7 @@ from src.app.plugin_system.api.storage_api import PluginDatabase
 from .models import ALL_MODELS, SchemaVersionModel
 
 SCHEMA_KEY = "engram_memory_vnext"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class VNextSchema:

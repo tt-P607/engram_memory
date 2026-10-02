@@ -295,11 +295,20 @@ class VNextToolService:
             })
         return tuple(records)
 
-    async def person_lookup(self, person_id: str, context: ToolContext) -> dict[str, object]:
-        """读取准确身份、核心印象与当前主次人物相关的近期记忆。"""
+    async def person_lookup(
+        self, person_id: str, context: ToolContext, *,
+        view: str = "current", revision_no: int | None = None,
+    ) -> dict[str, object]:
+        """只读当前印象、历史目录或指定历史版本，不触发人物生成。"""
         self.require_permission("person_lookup", context)
         if not person_id.strip():
             raise ValueError("person_id 不能为空")
+        if view not in {"current", "history", "revision"}:
+            raise ValueError("人物查询 view 必须为 current、history 或 revision")
+        if view == "revision" and (revision_no is None or revision_no < 1):
+            raise ValueError("读取历史人物印象必须提供正整数 revision_no")
+        if view != "revision" and revision_no is not None:
+            raise ValueError("revision_no 仅用于 revision 查询")
         person = await self._persona.get_core_person(person_id)
         persona = await self._persona.get_persona(person_id) if person else None
         aliases = await self._repository.resolve_person_aliases(person_id)
@@ -316,15 +325,30 @@ class VNextToolService:
         recent = [{"memory_id": item.memory_id, "title": item.title,
                    "current_content_preview": item.content[:160], "observed_at": item.observed_at,
                    **await self._people_view(item.revision_id)} for item in revisions]
-        return {
+        impression = persona.impression_text if persona and revisions else ""
+        result: dict[str, object] = {
             "person_id": person_id, "core_person_id": person.person_id if person else None,
             "basic_person_info": ({"platform": person.platform, "user_id": person.user_id,
                                    "nickname": person.nickname, "cardname": person.cardname}
                                   if person else await self._repository.get_person_metadata(person_id)),
-            "persona_impression": persona.impression_text if persona else None,
-            "persona_updated_at": persona.updated_at if persona else None,
+            "persona_impression": impression or "暂无人物印象",
+            "persona_updated_at": persona.updated_at if impression and persona else None,
             "recent_memories": recent,
+            "view": view,
         }
+        if view != "current":
+            history = await self._persona.get_history(
+                person.person_id if person else person_id,
+                revision_no if view == "revision" else None,
+            )
+            result["history_notice"] = "以下是当时的主观印象，不代表当前事实，也不是正式记忆依据。"
+            if view == "history":
+                result["persona_history"] = history
+            elif history:
+                result["persona_revision"] = history[0]
+            else:
+                raise ValueError("人物印象历史版本不存在")
+        return result
 
     async def _record_read_event(self, memory_id: str, context: ToolContext) -> None:
         """记录读取事件，不改变记忆正文或人物印象。"""

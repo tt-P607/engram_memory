@@ -153,8 +153,10 @@ class VNextRuntimeOwner:
             rrf_k=vnext.retrieval.rrf_k,
             on_memory_changed=self._on_memory_changed,
         )
-        self.persona_service = PersonaService(self.schema)
-        self.persona_updater = PersonaUpdater(self.persona_service, self.repository)
+        self.persona_service = PersonaService(self.schema, persona_config=vnext.persona)
+        self.persona_updater = PersonaUpdater(
+            self.persona_service, self.repository, max_concurrency=vnext.persona.max_concurrency,
+        )
         self.vector_index = VectorIndexService(
             self.schema,
             self.vector_sink,
@@ -215,6 +217,7 @@ class VNextRuntimeOwner:
             self._worker_started = True
             self.vector_worker.start()
             self._initialized = True
+            self.persona_updater.start()
         except BaseException:
             await self._shutdown_resources()
             raise

@@ -330,14 +330,22 @@ class VNextMemoryInvalidateAction(BaseAction):
 
 
 class VNextPersonLookupTool(BaseTool):
-    """查询准确人物身份、当前印象和近期相关记忆。"""
+    """查询准确人物身份、当前或历史印象和近期相关记忆。"""
 
     name = "person_lookup"
-    description = "按人物 ID 查询核心信息、印象与近期相关记忆；ID 不能用昵称代替。"
+    description = (
+        "按人物 ID 查询核心信息、当前印象与近期记忆；ID 不能用昵称代替。"
+        "view=current 读当前，history 列出历史目录，revision 配合 revision_no 读指定历史正文。"
+        "历史只是当时的主观认识，不是当前事实或正式记忆依据。"
+    )
 
-    async def execute(self, person_id: str) -> tuple[bool, str | dict[str, object]]:
-        """返回人物记录和主次人物关联的记忆目录。"""
-        return True, await _owner(self.plugin).tools.person_lookup(person_id, _actor_context(self))
+    async def execute(
+        self, person_id: str, view: str = "current", revision_no: int | None = None,
+    ) -> tuple[bool, str | dict[str, object]]:
+        """按 view 返回当前印象、历史目录或 revision_no 对应的历史正文。"""
+        return True, await _owner(self.plugin).tools.person_lookup(
+            person_id, _actor_context(self), view=view, revision_no=revision_no,
+        )
 
 
 class VNextMemoryService(BaseService):

@@ -1,4 +1,4 @@
-"""将独立 Engram v1 或 v2 副本迁移到 v3，保留来源库与记忆记录。"""
+"""将独立 Engram v1、v2 或 v3 副本迁移到 v4，保留来源库与记忆记录。"""
 
 from __future__ import annotations
 
@@ -56,11 +56,14 @@ def _hash(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def _table_hash(connection: sqlite3.Connection, table: str) -> str:
+def _table_hash(
+    connection: sqlite3.Connection, table: str, columns: tuple[str, ...] = (),
+) -> str:
     """计算表行摘要，用于确认迁移副本中的数据未变化。"""
     digest = hashlib.sha256()
     quoted_table = _quote_identifier(table)
-    for row in connection.execute(f"SELECT * FROM {quoted_table}"):
+    projection = ",".join(_quote_identifier(column) for column in columns) if columns else "*"
+    for row in connection.execute(f"SELECT {projection} FROM {quoted_table}"):
         digest.update(repr(tuple(row)).encode("utf-8"))
         digest.update(b"\n")
     return digest.hexdigest()
@@ -242,24 +245,27 @@ def _queue_vector_updates(
     }
 
 
-def _migrate_v2_copy(
+def _migrate_preserved_copy(
     source: Path,
     target: Path,
     old: sqlite3.Connection,
     before_hash: str,
     source_tables: set[str],
+    source_version: int,
 ) -> dict[str, object]:
-    """复制 v2 数据库到 v3，保留全部数据表和历史人物印象归档。"""
+    """扩展 v2 或 v3 副本的人物审计字段，保留全部原始列及历史归档。"""
     persona_table = "engram_vnext_person_persona"
     required_tables = {
         "engram_vnext_memory",
         "engram_vnext_memory_revision",
         "engram_vnext_evidence",
         "engram_vnext_schema_version",
-        persona_table,
+        "engram_vnext_persona_update_log",
     }
+    if source_version == 2:
+        required_tables.add(persona_table)
     if not required_tables.issubset(source_tables):
-        raise ValueError("Schema v2 来源缺少预期数据表")
+        raise ValueError("Schema 来源缺少预期数据表")
 
     report_path = target.with_suffix(".migration.json")
     if report_path.exists() or report_path.is_symlink():
@@ -279,28 +285,44 @@ def _migrate_v2_copy(
         for table in preserved_tables
         if table != "engram_vnext_schema_version"
     }
+    original_columns = {
+        table: tuple(row[1] for row in old.execute(
+            f"PRAGMA table_info({_quote_identifier(table)})"
+        )) for table in preserved_tables
+    }
     archived_persona_rows = int(
         old.execute(
             f"SELECT count(*) FROM {_quote_identifier(persona_table)}"
         ).fetchone()[0]
-    )
+    ) if persona_table in source_tables else 0
 
     target.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(target)) as new:
         old.backup(new)
         new.execute("PRAGMA foreign_keys=OFF")
         with new:
+            new.execute("ALTER TABLE engram_vnext_persona_update_log ADD COLUMN generator_version TEXT")
+            new.execute(
+                "ALTER TABLE engram_vnext_persona_update_log ADD COLUMN revision_no INTEGER "
+                "CHECK (revision_no >= 1)"
+            )
+            new.execute("ALTER TABLE engram_vnext_persona_update_log ADD COLUMN impression_text TEXT")
+            new.execute(
+                "CREATE UNIQUE INDEX uq_engram_vnext_persona_revision "
+                "ON engram_vnext_persona_update_log(person_id, revision_no)"
+            )
             updated = new.execute(
                 "UPDATE engram_vnext_schema_version SET version=?, applied_at=? "
-                "WHERE schema_key=? AND version=2",
+                "WHERE schema_key=? AND version=?",
                 (
                     SCHEMA_VERSION,
                     datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                     SCHEMA_KEY,
+                    source_version,
                 ),
             )
             if updated.rowcount != 1:
-                raise ValueError("Schema v2 版本记录不唯一或已变化")
+                raise ValueError("Schema 版本记录不唯一或已变化")
 
         target_tables = {
             row[0]
@@ -322,7 +344,7 @@ def _migrate_v2_copy(
         if target_counts != source_counts:
             raise ValueError("迁移改变了现有记忆、证据或其他表记录数")
         if any(
-            _table_hash(new, table) != digest
+            _table_hash(new, table, original_columns[table]) != digest
             for table, digest in source_hashes.items()
         ):
             raise ValueError("迁移改变了现有记忆、证据或其他表内容")
@@ -342,7 +364,7 @@ def _migrate_v2_copy(
     if not source_unchanged:
         raise ValueError("迁移来源指纹变化")
     result: dict[str, object] = {
-        "source_schema_version": 2,
+        "source_schema_version": source_version,
         "schema_version": SCHEMA_VERSION,
         "archived_table": persona_table,
         "archived_persona_rows": archived_persona_rows,
@@ -358,7 +380,7 @@ def _migrate_v2_copy(
 
 
 def migrate_copy(source: Path, target: Path) -> dict[str, object]:
-    """创建 v3 数据库副本并检查数据守恒，不修改来源或替换生产路径。"""
+    """创建 v4 数据库副本并检查数据守恒，不修改来源或替换生产路径。"""
     source, target = _validate_paths(source, target)
     before_hash = _hash(source)
     uri = f"file:{quote(source.as_posix(), safe='/:')}?mode=ro&immutable=1"
@@ -368,8 +390,8 @@ def migrate_copy(source: Path, target: Path) -> dict[str, object]:
             "SELECT version FROM engram_vnext_schema_version WHERE schema_key=?",
             (SCHEMA_KEY,),
         ).fetchone()
-        if version is None or version[0] not in {1, 2}:
-            raise ValueError("来源必须是 Schema v1 或 v2")
+        if version is None or version[0] not in {1, 2, 3}:
+            raise ValueError("来源必须是 Schema v1、v2 或 v3")
         if old.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise ValueError("来源数据库完整性检查失败")
         source_tables = {
@@ -378,13 +400,14 @@ def migrate_copy(source: Path, target: Path) -> dict[str, object]:
                 "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             )
         }
-        if version[0] == 2:
-            return _migrate_v2_copy(
+        if version[0] in {2, 3}:
+            return _migrate_preserved_copy(
                 source,
                 target,
                 old,
                 before_hash,
                 source_tables,
+                version[0],
             )
         target.parent.mkdir(parents=True, exist_ok=True)
         archive = target.with_suffix(".v1-retired.jsonl")
@@ -457,6 +480,8 @@ def migrate_copy(source: Path, target: Path) -> dict[str, object]:
                 names = ",".join(f'"{column}"' for column in columns)
                 for original in rows:
                     row = dict(original)
+                    if table == "engram_vnext_persona_update_log":
+                        row.update(generator_version=None, revision_no=None, impression_text=None)
                     if (
                         table == "engram_vnext_memory_retrieval_entry"
                         and row["entry_id"] in retired_entries
@@ -597,7 +622,7 @@ def main() -> None:
     parser.add_argument("--target", type=Path, required=True)
     args = parser.parse_args()
     source, target = _validate_paths(args.source, args.target)
-    print("将从来源数据库创建新的 Schema v3 副本；来源文件不会修改。")
+    print(f"将从来源数据库创建新的 Schema v{SCHEMA_VERSION} 副本；来源文件不会修改。")
     if input("输入 yes 确认继续：").strip().lower() != "yes":
         raise SystemExit("已取消迁移。")
     print(json.dumps(migrate_copy(source, target), ensure_ascii=False, indent=2))

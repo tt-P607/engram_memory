@@ -24,6 +24,15 @@ class VNextConfig(SectionBase):
             le=50,
             description="person_lookup 返回的近期相关记忆条数",
         )
+        max_concurrency: int = Field(
+            default=3, ge=1, description="补建、更新和重试共用的人物处理并发上限",
+        )
+        recent_chat_days: int = Field(
+            default=7, ge=1, description="人物印象辅助聊天的最近天数",
+        )
+        recent_chat_max_messages: int = Field(
+            default=500, ge=1, description="辅助聊天消息总上限，包含其他参与者和 Bot",
+        )
 
     persona: PersonaSection = Field(default_factory=PersonaSection)
 

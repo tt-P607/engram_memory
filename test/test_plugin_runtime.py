@@ -43,7 +43,7 @@ def owner(monkeypatch: pytest.MonkeyPatch) -> VNextRuntimeOwner:
     sink.inspect_embedding_settings = AsyncMock(return_value=("embedding-test", 4))
     vector_index = SimpleNamespace(ensure_active_manifest=AsyncMock())
     worker = SimpleNamespace(start=Mock(), stop=AsyncMock())
-    updater = SimpleNamespace(close=AsyncMock(), enqueue=AsyncMock())
+    updater = SimpleNamespace(close=AsyncMock(), enqueue=AsyncMock(), start=Mock())
     resources = {
         "VNextSchema": schema,
         "MemoryRepository": Mock(),
@@ -169,10 +169,10 @@ def test_runtime_exposes_only_snapshot_and_vector_interfaces() -> None:
 def test_owner_wires_persona_and_memory_change_callback(owner: VNextRuntimeOwner) -> None:
     """Owner 共享人物服务与仓储，并向工具服务提供正式变化回调。"""
     runtime_owner.PersonaService.assert_called_once_with(  # type: ignore[attr-defined]
-        owner.schema,
+        owner.schema, persona_config=owner.config.vnext.persona,
     )
     runtime_owner.PersonaUpdater.assert_called_once_with(  # type: ignore[attr-defined]
-        owner.persona_service, owner.repository,
+        owner.persona_service, owner.repository, max_concurrency=3,
     )
     arguments = runtime_owner.VNextToolService.call_args.kwargs  # type: ignore[attr-defined]
     assert arguments["on_memory_changed"] == owner._on_memory_changed
@@ -212,6 +212,7 @@ async def test_owner_initializes_vector_resources_once(owner: VNextRuntimeOwner)
         "embedding-test", 4, "engram-vnext-2",
     )
     owner.vector_worker.start.assert_called_once()  # type: ignore[attr-defined]
+    owner.persona_updater.start.assert_called_once()  # type: ignore[attr-defined]
     assert owner._initialized is True
 
 
