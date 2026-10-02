@@ -1,8 +1,4 @@
-"""Engram Memory vNext 配置节定义。
-
-对应 Technical Spec 第 134 节的配置键全集，全部集中于此，
-禁止散落 hard-code。
-"""
+"""正式记忆的人物印象、检索、闪回、提示注入与向量索引配置。"""
 
 from __future__ import annotations
 
@@ -12,84 +8,16 @@ from src.app.plugin_system.base import Field, SectionBase, config_section
 @config_section(
     "vnext",
     title="Engram Memory vNext",
-    description="Engram Memory vNext 认知记忆体系（Candidate/Sleep/Persona/Flashback）",
+    description="Engram Memory 正式记忆、人物印象与自然闪回",
     tag="ai",
 )
 class VNextConfig(SectionBase):
     """Engram Memory vNext 认知记忆配置模型。"""
 
-    @config_section("candidate_encoder", title="经历编码器", tag="ai")
-    class CandidateEncoderSection(SectionBase):
-        """Experience Encoder 批处理参数。"""
-
-        group_enabled: bool = Field(
-            default=True,
-            description="是否收集群聊新消息作为候选",
-            label="收集群聊",
-        )
-        private_enabled: bool = Field(
-            default=True,
-            description="是否收集私聊新消息作为候选",
-            label="收集私聊",
-        )
-        message_threshold: int = Field(
-            default=30,
-            ge=1,
-            description="触发一次 Candidate 编码所需的未处理消息数",
-        )
-        pending_limit: int = Field(
-            default=1000,
-            ge=1,
-            description="待处理、处理中、暂缓和失败的候选总量超过上限时暂停新经历编码",
-        )
-        max_wait_minutes: int = Field(
-            default=45,
-            ge=1,
-            description="未达消息数量时的时间触发阈值（分钟）；达到后在定时巡检时编码",
-        )
-
-    candidate_encoder: CandidateEncoderSection = Field(default_factory=CandidateEncoderSection)
-
-    @config_section("sleep", title="睡眠整理", tag="timer")
-    class SleepSection(SectionBase):
-        """Sleep Agent 触发与批处理参数。"""
-
-        daily_time: str = Field(
-            default="04:30",
-            description="每日固定整理触发时间（HH:MM，本地时区）",
-        )
-        pressure_threshold: int = Field(
-            default=8,
-            ge=1,
-            description="Pending Candidate 数量压力触发阈值",
-        )
-        quiet_period_minutes: int = Field(
-            default=30,
-            ge=0,
-            description="压力触发前需要保持安静的窗口（分钟），0 表示不启用",
-        )
-        batch_size: int = Field(
-            default=100,
-            ge=1,
-            le=100,
-            description="单个 Sleep Session 最多认领的 Candidate 数量",
-        )
-        automatic_since: str = Field(
-            default="",
-            description="自动整理和新聊天编码的 UTC 起始时间（ISO 8601）；留空处理全部候选，之前的历史候选保留供手动整理",
-        )
-
-    sleep: SleepSection = Field(default_factory=SleepSection)
-
     @config_section("persona", title="人物印象", tag="ai")
     class PersonaSection(SectionBase):
         """Persona 更新与查询参数。"""
 
-        max_length: int = Field(
-            default=500,
-            ge=1,
-            description="核心人物印象正文最大长度（字符），超出时由模型重新凝练",
-        )
         recent_memory_limit: int = Field(
             default=10,
             ge=1,

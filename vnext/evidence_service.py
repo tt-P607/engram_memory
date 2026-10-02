@@ -31,7 +31,7 @@ MessageReader = Callable[
 async def _read_source_messages(
     references: tuple[tuple[str, str], ...],
 ) -> tuple[dict[str, object], ...]:
-    """通过插件现有的只读消息桥接读取精确来源。"""
+    """通过插件的只读消息桥接读取精确来源。"""
     return tuple(item.to_dict() for item in await read_message_snapshots(references))
 
 
@@ -105,7 +105,7 @@ class EvidenceService:
                 payload["person_id"] = person_api.generate_person_id(
                     str(payload["platform"]), str(payload["sender_id"]),
                 )
-            # 旧消息没有可靠的真人角色字段，person_id 只标识发送账号。
+            # person_id 只标识发送账号，不证明发送者是真人。
             if (
                 payload.get("speaker_is_bot") is True
                 or str(payload.get("sender_role") or "").casefold() == "bot"
@@ -249,7 +249,7 @@ class EvidenceService:
         return result.rowcount
 
     async def synchronize_redactions_from(self, source: EvidenceService) -> int:
-        """恢复旧备份后，从保留的当前库同步隐私删除标记，防止来源复活。"""
+        """从来源库同步隐私删除标记，防止备份恢复后重新暴露已删除来源。"""
         async with source._schema.database.session() as session:
             tombstones = tuple((await session.execute(
                 select(
@@ -282,7 +282,7 @@ class EvidenceService:
         self,
         references: tuple[tuple[str, str], ...],
     ) -> None:
-        """Redact all trace data for Sleep sessions containing a source ID."""
+        """清除包含指定来源 ID 的整理会话日志内容，保留审计标识。"""
         keys = _normalized_references(references)
         trace_path = self._schema.db_path.resolve().parent / "sleep-events.jsonl"
         if not keys or not trace_path.is_file():
@@ -395,7 +395,7 @@ class EvidenceService:
 def _normalized_references(
     references: tuple[tuple[str, str], ...],
 ) -> tuple[tuple[str, str], ...]:
-    """Return unique, non-empty source references in stable order."""
+    """按原顺序返回去重后的非空来源引用。"""
     return tuple(
         dict.fromkeys(
             (stream_id.strip(), message_id.strip())
@@ -409,12 +409,12 @@ def _normalized_references(
 
 
 def _matches_any(patterns: tuple[re.Pattern[str], ...], value: str) -> bool:
-    """Return whether text contains any exact source identifier token."""
+    """判断文本是否命中任一来源标识的精确匹配模式。"""
     return any(pattern.search(value) for pattern in patterns)
 
 
 def _trace_session_id(row: dict[str, object]) -> str | None:
-    """Read the Sleep audit session ID from a trace row."""
+    """从日志行读取整理会话的审计 ID。"""
     value = row.get("sleep_session_id") or row.get("session_id")
     if not isinstance(value, str) or not value.strip():
         return None
@@ -422,7 +422,7 @@ def _trace_session_id(row: dict[str, object]) -> str | None:
 
 
 def _trace_newline(line: str) -> str:
-    """Return a JSONL row's original newline sequence."""
+    """返回 JSONL 行原有的换行序列。"""
     if line.endswith("\r\n"):
         return "\r\n"
     if line.endswith("\n"):

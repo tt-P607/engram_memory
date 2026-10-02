@@ -60,40 +60,18 @@
     .detail{min-height:270px;padding:20px}.detail-head{padding-bottom:15px;border-bottom:1px solid var(--line)}.detail-head h2{margin:6px 0;overflow-wrap:anywhere}
     .detail-section{margin-top:17px}.detail-section h3{display:flex;align-items:center;gap:8px;color:#526369;font:10px var(--sans);font-weight:700;letter-spacing:.13em;text-transform:uppercase}
     .detail-section h3:after{flex:1;height:1px;background:#e6e2d8;content:""}.body{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;color:#36474c;font-size:13px;line-height:1.8}
-    .source,.revision,.audit,.persona{margin-top:8px;padding:12px;border:1px solid #e6e2d8;border-radius:5px;background:#fffefa}
+    .source,.revision,.persona{margin-top:8px;padding:12px;border:1px solid #e6e2d8;border-radius:5px;background:#fffefa}
     .source-head{display:flex;flex-wrap:wrap;align-items:center;gap:5px 9px;color:#6c787a;font-size:10px}.source-note{margin:7px 0 0;color:#4f6064;font-size:11px}
     .snapshot{margin-top:9px;padding:9px 11px;border-left:2px solid #c19a67;background:#f7f4ed}.snapshot blockquote{margin:5px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.7}
-    .code{margin:7px 0 0;padding:10px;overflow:auto;border-radius:4px;color:#3c4c50;background:#f2f0e9;font:10px/1.65 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
-    .sleep-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0 4px;padding:9px 11px;border:1px solid var(--line);border-radius:6px;background:#faf8f1}
-    .sleep-toolbar-label{color:#69777a;font-size:11px}.sleep-mode{display:flex;gap:3px;padding:3px;border:1px solid #e3dfd5;border-radius:6px;background:#f0eee7}
-    .sleep-mode button{min-height:30px;padding:4px 11px;border:1px solid transparent;border-radius:4px;color:#687578;background:transparent;font-size:11px}
-    .sleep-mode button:hover{color:var(--navy);background:#fffdf8}.sleep-mode button[aria-pressed=true]{border-color:#d8c6aa;color:#6c5232;background:#fffdf8;box-shadow:0 1px 2px #24353b12}
-    .sleep-mode button:focus-visible,.memory-open:focus-visible,.technical summary:focus-visible{outline:2px solid #a8814f;outline-offset:2px}
-    .sleep-notice{margin:10px 0;padding:10px 12px;border:1px solid #ead9bc;border-left:3px solid var(--brass);border-radius:4px;color:#705a39;background:#fbf5e9;font-size:11px}
-    .sleep-timeline{position:relative;display:grid;gap:9px;margin:8px 0 0;padding-left:19px}
-    .sleep-timeline:before{position:absolute;top:12px;bottom:12px;left:5px;width:1px;background:#ded8ca;content:""}
-    .sleep-entry{position:relative;min-width:0;padding:12px;border:1px solid #e6e2d8;border-radius:5px;background:#fffefa}
-    .sleep-entry:before{position:absolute;top:17px;left:-19px;width:9px;height:9px;border:2px solid #fffdf8;border-radius:50%;background:#b38d5a;box-shadow:0 0 0 1px #b38d5a;content:""}
-    .sleep-entry.warn:before{background:#a3584e;box-shadow:0 0 0 1px #a3584e}.sleep-entry.done:before{background:#547965;box-shadow:0 0 0 1px #547965}
-    .sleep-entry-head{display:flex;flex-wrap:wrap;align-items:center;gap:5px 9px;margin-bottom:5px}.sleep-entry-head strong{color:#35484d;font-size:12px}
-    .sleep-time{color:#8a9493;font-size:10px}.sleep-copy{margin:5px 0 0;color:#536267;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere}
-    .sleep-subtitle{margin:10px 0 4px;color:#87908e;font-size:10px;letter-spacing:.04em}.sleep-facts{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
-    .sleep-fact{padding:2px 7px;border:1px solid #e5e0d4;border-radius:99px;color:#727e7e;background:#f7f5ef;font-size:10px}
-    .sleep-action,.sleep-memory{margin-top:8px;padding:11px;border:1px solid #e6e2d8;border-radius:5px;background:#fffefa}
-    .sleep-action h4,.sleep-memory h4{margin:0;color:#394d51;font:14px/1.4 var(--serif);overflow-wrap:anywhere}
-    .sleep-action .body,.sleep-memory .body{margin-top:7px}
-    .sleep-memory{border-left:3px solid #72917b}.sleep-memory.stale{border-left-color:#bc925d}
-    .memory-open{min-height:31px;margin-top:9px;padding:4px 9px;border:1px solid #d9d1c2;border-radius:4px;color:#465b5b;background:#f8f5ed;font-size:10px}
+    .memory-open:focus-visible{outline:2px solid #a8814f;outline-offset:2px}
+    .memory-open{min-height:31px;max-width:100%;margin-top:9px;padding:4px 9px;border:1px solid #d9d1c2;border-radius:4px;color:#465b5b;background:#f8f5ed;font-size:10px;overflow-wrap:anywhere}
     .memory-open:hover{border-color:#ad926b;background:#fffaf0}
-    .technical{margin-top:7px;border:1px solid #e7e3da;border-radius:4px;background:#faf9f5}
-    .technical summary{padding:6px 9px;color:#768181;font-size:10px;cursor:pointer}.technical .code{margin:0;border-radius:0 0 4px 4px}
-    .trace-empty{padding:18px 11px;border:1px dashed #dcd7cc;border-radius:5px;color:#828d8c;text-align:center;font-size:11px}
     .empty,.error,.loading{padding:25px 12px;color:#849091;text-align:center}.error{color:#a3584e}.loading:before{display:inline-block;width:12px;height:12px;margin-right:7px;border:1px solid #b9aa91;border-right-color:transparent;border-radius:50%;vertical-align:-2px;animation:spin .8s linear infinite;content:""}
     .persona-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}.persona{margin:0;padding:15px}.persona h3{overflow-wrap:anywhere}.persona-id{margin:-2px 0 9px;color:#899294}.footnote{margin:14px 0;color:#909998;font-size:10px}.mono{font:10px var(--mono);overflow-wrap:anywhere}
     @keyframes spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;transition-duration:.01ms!important}}
     @media(max-width:1050px){main{padding-right:22px;padding-left:22px}.overview{grid-template-columns:repeat(2,minmax(0,1fr))}.band{grid-template-columns:1fr}.band-side{flex-wrap:wrap}}
     @media(max-width:720px){.layout{display:block}aside{padding:13px 12px 9px}.brand{padding:0 4px 12px}.brand strong{font-size:16px}.rail-label,.rail-foot{display:none}nav{display:flex;overflow-x:auto;gap:4px}.nav{flex:none;width:auto;padding:8px 9px;font-size:11px}.glyph{width:19px}
-      main{padding:0 13px 28px}.topline{min-height:53px}#view{padding-top:19px}.heading{align-items:start;margin-bottom:17px}h1{font-size:29px}.split{grid-template-columns:1fr}.detail{min-height:220px;padding:16px}.persona-grid{grid-template-columns:1fr}.overview{gap:7px}.stat{min-height:106px;padding:13px}.stat strong{font-size:29px}.band-side{gap:15px}.sleep-toolbar{align-items:flex-start;flex-direction:column}.sleep-mode{width:100%}.sleep-mode button{flex:1}.sleep-timeline{padding-left:16px}.sleep-entry:before{left:-16px}}
+      main{padding:0 13px 28px}.topline{min-height:53px}#view{padding-top:19px}.heading{align-items:start;margin-bottom:17px}h1{font-size:29px}.split{grid-template-columns:1fr}.detail{min-height:220px;padding:16px}.persona-grid{grid-template-columns:1fr}.overview{gap:7px}.stat{min-height:106px;padding:13px}.stat strong{font-size:29px}.band-side{gap:15px}}
   </style>
 </head>
 <body>
@@ -104,11 +82,9 @@
       <nav aria-label="档案栏目">
         <button class="nav" data-view="overview" aria-current="page"><span class="glyph">⌂</span>运行概览</button>
         <button class="nav" data-view="memories"><span class="glyph">▤</span>正式记忆</button>
-        <button class="nav" data-view="candidates"><span class="glyph">◫</span>候选积压</button>
-        <button class="nav" data-view="sleep"><span class="glyph">◷</span>Sleep 会话</button>
         <button class="nav" data-view="personas"><span class="glyph">♙</span>人物印象</button>
       </nav>
-      <div class="rail-foot"><strong>本地记忆管理</strong>查看记忆与来源，整理新候选，仅在本机开放。</div>
+      <div class="rail-foot"><strong>本地记忆管理</strong>正式记忆、版本来源与人物印象。</div>
     </aside>
     <main>
       <div class="topline"><span class="crumb">ENGRAM / <span id="crumb">运行概览</span></span><div class="top-actions"><span class="local">LOCAL ACCESS</span><button class="refresh" id="refresh" aria-label="刷新" title="刷新">↻</button></div></div>
@@ -118,8 +94,8 @@
   <script>
     "use strict";
     const root = document.getElementById("view"), crumb = document.getElementById("crumb");
-    const titles = {overview:"运行概览",memories:"正式记忆",candidates:"候选积压",sleep:"Sleep 会话",personas:"人物印象"};
-    const state = {view:"overview",id:null,q:"",status:"",sleepMode:"readable"};
+    const titles = {overview:"运行概览",memories:"正式记忆",personas:"人物印象"};
+    const state = {view:"overview",id:null,q:"",status:""};
     function el(tag, cls, text) { const n=document.createElement(tag); if(cls)n.className=cls; if(text!==undefined&&text!==null)n.textContent=String(text); return n; }
     function date(value) { if(value===null||value===undefined||value==="")return "时间未知"; const d=new Date(typeof value==="number"?value*1000:value); return Number.isNaN(d.getTime())?String(value):new Intl.DateTimeFormat("zh-CN",{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false}).format(d); }
     async function api(path,options={}) {
@@ -129,10 +105,11 @@
     }
     function message(parent,cls,text){parent.replaceChildren(el("div",cls,text))}
     function heading(kicker,title,sub){const h=el("div","heading"),c=el("div");c.append(el("p","eyebrow",kicker),el("h1","",title),el("p","sub",sub));h.append(c);return h}
-    const labels={ACTIVE:"可用",RESOLVED:"已处理",COMPLETED:"已完成",RECORDED:"已记录",FAILED:"失败",TOMBSTONED:"已封存",PENDING:"待整理",PROCESSING:"处理中",RUNNING:"运行中",DEFERRED:"暂缓",PARTIAL:"部分完成",MERGED:"已合并",AVAILABLE:"来源可读取",REDACTED:"来源已隐私删除",NOT_CAPTURED:"来源缺失",UNKNOWN:"未知",CREATE_NEW:"新建",REINFORCE:"强化",REVISE:"修订",MERGE:"合并",RELATE:"关联",DEFER:"暂缓",IGNORE:"不记入",PREPARED:"已准备",EXECUTING:"执行中",DAILY:"每日整理",PRESSURE:"积压整理",FACT:"事实",EVENT:"经历",PREFERENCE:"偏好",CHAT_MESSAGE:"聊天消息",LEGACY_IMPORT:"历史导入"};
-    Object.assign(labels,{RELATIONSHIP:"关系",COMMITMENT:"约定",PERSONAL_STATE:"个人状态",SOCIAL_PATTERN:"社交模式",INITIAL:"初次记录",DEVELOPMENT:"经历发展",CORRECTION:"更正",CLARIFICATION:"澄清",NEW_EVIDENCE:"补充来源",EXPLICIT_CORRECTION:"本人更正",ADMIN_CORRECTION:"管理员更正",MIGRATION_REWRITE:"迁移整理",MESSAGE_SET:"原始消息",ACTOR_WRITE:"主动记忆",SYSTEM_EVENT:"系统事件",LEGACY_RECORD:"历史记录",ADMIN:"管理员",EXTERNAL:"外部来源",MANUAL:"手动整理",RECOVERY:"中断恢复",SUCCEEDED:"成功",SUCCESS:"成功",COMMITTED:"已提交",NOT_STARTED:"未开始"});
+    const labels={ACTIVE:"可用",TOMBSTONED:"已作废",MERGED:"已合并",AVAILABLE:"来源可读取",REDACTED:"来源已隐私删除",NOT_CAPTURED:"来源缺失",UNKNOWN:"未知",FACT:"事实",EVENT:"经历",PREFERENCE:"偏好",CHAT_MESSAGE:"聊天消息",LEGACY_IMPORT:"历史导入"};
+    Object.assign(labels,{RELATIONSHIP:"关系",COMMITMENT:"约定",PERSONAL_STATE:"个人状态",SOCIAL_PATTERN:"社交模式",INITIAL:"初次记录",DEVELOPMENT:"经历发展",CORRECTION:"更正",CLARIFICATION:"澄清",NEW_EVIDENCE:"补充来源",EXPLICIT_CORRECTION:"明确更正",ADMIN_CORRECTION:"管理员更正",MIGRATION_REWRITE:"迁移整理",MESSAGE_SET:"原始消息",ACTOR_WRITE:"主动记忆",SYSTEM_EVENT:"系统事件",LEGACY_RECORD:"历史记录",ADMIN:"管理员",EXTERNAL:"外部来源"});
     function label(value){return labels[value]||value||"未知"}
-    function badge(value){const t=String(value||"UNKNOWN"),c=["ACTIVE","RESOLVED","COMPLETED","RECORDED"].includes(t)?"badge good":["FAILED","TOMBSTONED"].includes(t)?"badge bad":["PENDING","PROCESSING","RUNNING"].includes(t)?"badge":"badge quiet";return el("span",c,label(t))}
+    function badge(value){const t=String(value||"UNKNOWN"),c=t==="ACTIVE"?"badge good":t==="TOMBSTONED"?"badge bad":"badge quiet";return el("span",c,label(t))}
+    function personText(person){if(!person)return "人物未记录";const id=person.person_id,name=person.subject_label||person.label||person.subject_key;return name&&id&&name!==id?name+" · "+id:name||id||"人物未记录"}
     function section(parent,title){const s=el("section","detail-section");s.append(el("h3","",title));parent.append(s);return s}
     function sourceCards(parent,sources){
       const area=section(parent,"关联来源");
@@ -147,36 +124,34 @@
     function record(item,idKey,title,preview,meta,select){const b=el("button","record");b.type="button";b.setAttribute("aria-pressed",String(item[idKey]===state.id));const top=el("span","record-top");top.append(el("span","record-title",title||"未命名记录"),badge(item.status));b.append(top);const m=el("span","meta");for(const v of meta||[])if(v)m.append(el("span","",v));b.append(m);if(preview)b.append(el("span","preview",preview));b.addEventListener("click",select);return b}
     async function render(){
       root.replaceChildren(el("div","loading","正在读取档案…"));
-      try{if(state.view==="overview")await overview();else if(state.view==="memories")await memories();else if(state.view==="candidates")await candidates();else if(state.view==="sleep")await sleep();else await personas()}
+      try{if(state.view==="overview")await overview();else if(state.view==="memories")await memories();else await personas()}
       catch(e){root.replaceChildren(heading("读取状态","档案暂不可用","请确认从本机打开管理页，且 Engram vNext Runtime 已就绪。"),el("div","panel error",e.message))}
     }
     async function overview(){
-      const r=await api("/engram-memory/api/status"),m=r.memory_counts||{},c=r.candidate_counts||{};
-      const h=heading("Runtime overview","记忆档案","查看已保存的记忆、来源和 Sleep 整理记录。");
+      const r=await api("/engram-memory/api/status"),m=r.memory_counts||{};
+      const h=heading("Runtime overview","记忆档案","正式记忆、版本来源与人物印象。");
       const grid=el("div","overview");
-      for(const [label,value,note] of [["正式记忆",m.ACTIVE||0,"当前可用"],["记忆版本",r.revision_count||0,"包含保留的历史版本"],["自动整理积压",r.automatic_backlog_count||0,"新聊天的待整理候选"],["历史待整理",r.historical_backlog_count||0,"旧候选保留原状态"]]){
+      for(const [label,value,note] of [["正式记忆",m.ACTIVE||0,"当前可用"],["记忆版本",r.revision_count||0,"包含保留的历史版本"],["已作废",m.TOMBSTONED||0,"正文与来源保留"],["已合并",m.MERGED||0,"版本与关系保留"]]){
         const card=el("div","stat");card.append(el("label","",label),el("strong","",value),el("small","",note));grid.append(card)}
-      const band=el("section","band"),copy=el("div"),side=el("div","band-side");copy.append(el("h2","","整理运行"),el("p","","新聊天已收到 "+(r.received_message_buffer_count||0)+" 条待检查消息；每个会话累计 "+r.encoder_message_threshold+" 条或等待 "+r.encoder_max_wait_minutes+" 分钟后编码。"));
+      const band=el("section","band"),copy=el("div"),side=el("div","band-side");copy.append(el("h2","","自然闪回"));
       if(r.flashback&&typeof r.flashback.enabled==="boolean"){
         const flashback=r.flashback.effective?"已就绪":r.flashback.enabled?"已配置开启，待校准":"配置关闭";
-        const explanation=r.flashback.reason?" · "+r.flashback.reason:"";
-        copy.append(el("p","","自动闪回："+flashback+explanation));
+        copy.append(el("p","",r.flashback.reason||""));const status=el("div");status.append(el("small","","自动闪回"),el("strong","",flashback));side.append(status);
       }
-      for(const [label,value] of [["经历编码",r.encoder_paused?"已暂停":"运行中"],["自动整理起点",date(r.automatic_since)]]){const x=el("div"),strong=el("strong","",value);x.append(el("small","",label),strong);side.append(x)}
-      band.append(copy,side);const foot=el("p","footnote","候选状态：待整理 "+(c.PENDING||0)+" · 处理中 "+(c.PROCESSING||0)+" · 延后 "+(c.DEFERRED||0)+" · 已处理 "+(c.RESOLVED||0)+" · 失败 "+(c.FAILED||0));root.replaceChildren(h,grid,band,foot);
+      band.append(copy,side);root.replaceChildren(h,grid,band);
     }
-    function filter(label,options,run){
+    function filter(label,options){
       const f=el("form","filters"),input=el("input"),select=options?el("select"):null;input.type="search";input.placeholder=label;input.setAttribute("aria-label",label);input.value=state.q;f.append(input);
-      if(select){select.setAttribute("aria-label","按状态筛选");for(const [v,t] of options){const o=el("option","",t);o.value=v;select.append(o)}select.value=state.status;f.append(select)}
+      if(select){select.setAttribute("aria-label","按状态筛选");for(const [v,t] of options){const o=el("option","",t);o.value=v;select.append(o)}select.value=state.status||"ACTIVE";f.append(select)}
       const go=el("button","primary","查找");go.type="submit";f.append(go);f.addEventListener("submit",e=>{e.preventDefault();state.q=input.value.trim();state.status=select?select.value:"";state.id=null;render()});return f;
     }
     async function memories(){
-      const p=split("正式记忆"),opts=[["ACTIVE","当前有效"],["MERGED","已合并"],["TOMBSTONED","已封存"],["ALL","全部状态"]];
+      const p=split("正式记忆"),opts=[["ACTIVE","当前有效"],["MERGED","已合并"],["TOMBSTONED","已作废"],["ALL","全部状态"]];
       p.left.querySelector(".panel-head").after(filter("检索标题或正文",opts));
       const h=heading("Canonical memories","正式记忆","浏览正式记忆的当前内容、版本沿革、人物信息与关联来源。");
       const params=new URLSearchParams({q:state.q,status:state.status||"ACTIVE"}),r=await api("/engram-memory/api/memories?"+params);
       p.list.replaceChildren();if(!r.items.length)message(p.list,"empty","没有找到符合条件的正式记忆。");
-      for(const x of r.items){const person=x.subject&&(x.subject.subject_label||x.subject.person_id||x.subject.subject_key);p.list.append(record(x,"memory_id",x.title,x.preview,[x.memory_kind,person,date(x.updated_at||x.last_experienced_at)],()=>{state.id=x.memory_id;detailMemory(p.right,x.memory_id)}))}
+      for(const x of r.items)p.list.append(record(x,"memory_id",x.title,x.preview,[label(x.memory_kind),personText(x.subject),x.memory_id,date(x.updated_at||x.last_experienced_at)],()=>{state.id=x.memory_id;detailMemory(p.right,x.memory_id)}));
       root.replaceChildren(h,p.grid);if(state.id)detailMemory(p.right,state.id);
     }
     async function detailMemory(target,id){
@@ -184,364 +159,17 @@
       try{const r=await api("/engram-memory/api/memories/"+encodeURIComponent(id)),x=r.item;target.replaceChildren();const current=(x.revisions||[]).find(v=>v.revision_id===x.current_revision_id),head=el("div","detail-head");
         head.append(el("p","eyebrow","记忆档案 · "+(x.current_revision_no?"第 "+x.current_revision_no+" 版":"版本未知")),el("h2","",current?current.title:"正式记忆"));
         const meta=el("div","meta");meta.append(badge(x.status),el("span","mono",x.memory_id),el("span","","创建 "+date(x.created_at)));head.append(meta);target.append(head);
-        for(const v of x.revisions||[]){const card=el("article","revision"),top=el("div","record-top");top.append(el("h3","","第 "+v.revision_no+" 版 · "+v.title),badge(v.change_reason));card.append(top,el("p","meta",v.memory_kind+" · "+(v.subject?.subject_label||v.subject?.person_id||v.subject?.subject_key||"未指定主体")+" · "+date(v.created_at)),el("p","body",""+v.content));
-          if(v.participants&&v.participants.length)card.append(el("p","meta","参与者："+v.participants.map(a=>a.label||a.person_id||a.participant_kind).join("、")));target.append(card)}
+        for(const v of x.revisions||[]){const card=el("article","revision"),top=el("div","record-top");top.append(el("h3","","第 "+v.revision_no+" 版 · "+v.title),badge(v.change_reason));card.append(top,el("p","meta",label(v.memory_kind)+" · "+date(v.created_at)),el("p","meta mono","版本 ID · "+v.revision_id),el("p","meta mono","主要人物 · "+personText(v.subject)),el("p","body",""+v.content));
+          if(v.participants&&v.participants.length)card.append(el("p","meta mono","次要人物 · "+v.participants.map(personText).join("、")));target.append(card)}
         sourceCards(target,x.sources);
         if(x.relations&&x.relations.length){const rel=section(target,"记忆关系");for(const a of x.relations){const c=el("article","source");c.append(el("div","source-head",a.relation_type+" · "+a.related_memory_id));if(a.reason)c.append(el("p","source-note",a.reason));rel.append(c)}}
       }catch(e){message(target,"error",e.message)}
     }
-    async function candidates(){
-      const p=split("候选积压"),opts=[["","全部状态"],["PENDING","待整理"],["PROCESSING","处理中"],["DEFERRED","已延后"],["FAILED","失败"],["RESOLVED","已处理"]];
-      p.left.querySelector(".panel-head").after(filter("查找候选原文",opts));
-      const h=heading("Candidate queue","候选积压","查看候选原文、处理状态，以及其已关联的来源消息快照。");
-      const params=new URLSearchParams({q:state.q,limit:"60"});if(state.status)params.set("status",state.status);
-      const r=await api("/engram-memory/api/candidates?"+params);p.list.replaceChildren();if(!r.items.length)message(p.list,"empty","没有符合条件的候选。");
-      for(const x of r.items)p.list.append(record(x,"candidate_id",x.title,x.preview,["来源 "+x.evidence_count,x.proposed_kind,date(x.created_at)],()=>{state.id=x.candidate_id;detailCandidate(p.right,x.candidate_id)}));
-      root.replaceChildren(h,p.grid);if(state.id)detailCandidate(p.right,state.id);
-    }
-    async function detailCandidate(target,id){
-      message(target,"loading","正在读取候选来源…");
-      try{const r=await api("/engram-memory/api/candidates/"+encodeURIComponent(id)),x=r.item;target.replaceChildren();const head=el("div","detail-head");
-        head.append(el("p","eyebrow","候选档案"),el("h2","",x.title));const meta=el("div","meta");meta.append(badge(x.status),el("span","mono",x.candidate_id),el("span","","记录于 "+date(x.created_at)));head.append(meta);target.append(head);
-        section(target,"候选原文").append(el("p","body",x.content));const judgment=section(target,"编码判断");
-        if(x.subject)judgment.append(el("p","source-note","主体："+(x.subject.subject_label||x.subject.person_id||x.subject.subject_key||x.subject.subject_kind)));
-        if(x.participants&&x.participants.length)judgment.append(el("p","source-note","参与者："+x.participants.map(a=>a.label||a.person_id||a.participant_kind).join("、")));
-        if(x.processing_session_id)judgment.append(el("p","meta","整理会话 "+x.processing_session_id));if(x.last_error)judgment.append(el("p","source-note",x.last_error));
-        sourceCards(target,x.sources);
-      }catch(e){message(target,"error",e.message)}
-    }
-    const sleepActionLabels={CREATE_NEW:"新建",REINFORCE:"强化",REVISE:"修订",MERGE:"合并",RELATE:"关联",DEFER:"暂缓",IGNORE:"忽略"};
-    const sleepEventLabels={session_start:"会话开始",session_end:"会话结束",group_start:"开始检查一组候选",model_input:"请求模型判断",model_output:"模型输出",model_error:"模型调用失败",protocol_error:"协议格式错误",group_decision:"候选组决定",action_start:"开始执行动作",action_end:"动作执行完成",SEARCH:"检索正式记忆",MEMORY_READ:"读取记忆",EVIDENCE_READ:"读取来源",PERSON_LOOKUP:"读取人物资料",recent_formal_memories:"预读近期记忆",self_check:"执行后回读核对",readback:"执行后回读核对"};
-    Object.assign(sleepEventLabels,{MESSAGE_CONTEXT_READ:"查看原始聊天前后文",context_sources_saved:"保存实际引用的上下文证据"});
-    Object.assign(sleepEventLabels,{persona_review_start:"开始检查人物印象",persona_model_input:"人物印象：请求模型判断",persona_model_output:"人物印象：模型决定",persona_search:"人物印象：搜索过往记忆",persona_read:"人物印象：读取正式记忆",persona_review_end:"人物印象：审查与核心回读完成",persona_skipped:"人物印象：暂缓审查",persona_length_rejected:"人物印象：需要重新凝练正文",post_action_review_input:"执行后：将正文与来源交给模型核对",post_action_review_output:"执行后：模型核对结果",post_action_review_complete:"执行后：核对完成",post_action_review_failed:"执行后：核对失败，等待复核",post_action_correction_applied:"执行后：已纠正并回读",post_action_correction_rejected:"执行后：纠正被拒绝",overall_summary:"整轮结束：耗时与模型调用量"});
-    function actionName(value){const key=String(value||"").toUpperCase();return sleepActionLabels[key]||label(key)||"未注明动作"}
-    function parsed(value){
-      if(typeof value!=="string")return value;
-      const trimmed=value.trim();if(!trimmed||(!trimmed.startsWith("{")&&!trimmed.startsWith("[")))return value;
-      try{return JSON.parse(trimmed)}catch(_){return value}
-    }
-    function asRecord(value){const result=parsed(value);return result&&typeof result==="object"&&!Array.isArray(result)?result:{}}
-    function jsonText(value){try{return JSON.stringify(value===undefined?null:value,null,2)}catch(_){return String(value)}}
-    function technical(parent,title,value){
-      if(value===undefined||value===null)return;
-      const details=el("details","technical"),summary=el("summary","",title);
-      details.append(summary,el("pre","code",typeof value==="string"?value:jsonText(value)));parent.append(details);
-    }
-    function sleepStatus(value){const key=String(value||"UNKNOWN").toUpperCase();return badge(key)}
-    function addFact(parent,text){if(text!==undefined&&text!==null&&text!=="")parent.append(el("span","sleep-fact",text))}
-    function arrayAt(value,...keys){
-      const record=asRecord(value);
-      for(const key of keys){const item=parsed(record[key]);if(Array.isArray(item))return item}
-      return Array.isArray(parsed(value))?parsed(value):[];
-    }
-    function countText(value,labelText){return Array.isArray(value)?value.length+" "+labelText:typeof value==="number"?value+" "+labelText:null}
-    function candidateLabel(id,claims){const found=(claims||[]).find(item=>item.candidate_id===id);return found?.candidate_title||"候选记录"}
-    function addCandidateFacts(parent,ids,claims){
-      const values=Array.isArray(ids)?ids:typeof ids==="string"?[ids]:[];
-      if(!values.length)return;
-      addFact(parent,"候选 "+values.map(id=>candidateLabel(id,claims)).join("、"));
-      if(values.length>1)addFact(parent,values.length+" 条候选");
-      technical(parent,"候选 ID",values);
-    }
-    function actionCard(parent,rawAction,claims,caption){
-      const action=asRecord(rawAction),type=action.action_type||action.operation_type||action.type;
-      const card=el("article","sleep-action"),top=el("div","record-top"),title=action.title||action.new_memory?.title||action.memory_title;
-      top.append(el("h4","",(caption?caption+" · ":"")+actionName(type)+(title?" · "+title:"")));
-      if(action.status)top.append(sleepStatus(action.status));card.append(top);
-      const ids=action.candidate_ids||action.candidate_id;addCandidateFacts(card,ids,claims);
-      const reason=action.reason||action.note||action.rationale;
-      if(reason)card.append(el("p","sleep-copy","理由："+reason));
-      const body=action.content||action.new_memory?.content;
-      if(body)technical(card,"查看拟定正文",body);
-      const facts=el("div","sleep-facts");let hasFacts=false;
-      const sources=action.source_message_ids||action.evidence_ids||action.source_evidence_ids;
-      const sourceCount=countText(sources,"条来源");if(sourceCount){addFact(facts,sourceCount);hasFacts=true}
-      const sourceMemories=countText(action.source_memory_ids,"条合并来源记忆");if(sourceMemories){addFact(facts,sourceMemories);hasFacts=true}
-      const people=action.participants||action.people||action.persons;
-      if(Array.isArray(people)&&people.length){
-        const names=people.map(person=>typeof person==="string"?person:person?.label||person?.display_name||person?.subject_label||person?.person_id||person?.subject_key).filter(Boolean);
-        if(names.length){addFact(facts,"人物 "+names.join("、"));hasFacts=true}
-        if(!names.length){addFact(facts,people.length+" 位关联人物");hasFacts=true}
-      }
-      const subject=action.subject;
-      if(subject&&!people){const subjectRecord=asRecord(subject),name=typeof subject==="string"?subject:subjectRecord.subject_label||subjectRecord.display_name||subjectRecord.label||subjectRecord.person_id||subjectRecord.subject_key;if(name){addFact(facts,"人物 "+name);hasFacts=true}}
-      if(hasFacts)card.append(facts);
-      const idsForDetail={};
-      for(const key of ["memory_id","canonical_memory_id","source_memory_id","target_memory_id","source_memory_ids","target_memory_ids","source_message_ids","evidence_ids","operation_key"]){if(action[key]!==undefined)idsForDetail[key]=action[key]}
-      if(Object.keys(idsForDetail).length)technical(card,"相关技术 ID",idsForDetail);
-      if(!type&&!title&&!reason&&!body)technical(card,"结构化动作",rawAction);
-      parent.append(card);return card;
-    }
-    function traceResultItems(value){
-      const parsedValue=parsed(value);if(Array.isArray(parsedValue))return parsedValue;
-      const record=asRecord(parsedValue);
-      for(const key of ["items","results","memories","matches","records","evidence"]){if(Array.isArray(parsed(record[key])))return parsed(record[key])}
-      return [];
-    }
-    function renderSearchEntry(card,data){
-      const request=asRecord(data.request),query=data.query||request.query;
-      const queries=Array.isArray(data.queries)?data.queries:Array.isArray(request.queries)?request.queries:[];
-      if(query)card.append(el("p","sleep-copy","检索内容："+query));
-      for(const item of queries){const row=asRecord(item);if(row.query)card.append(el("p","sleep-copy","检索内容："+row.query));addCandidateFacts(card,row.candidate_ids,data.claims||[])}
-      const result=data.results!==undefined?data.results:data.result;
-      if(result===undefined){card.append(el("p","sleep-copy","记录了检索请求；此事件没有附带结果字段。"));return}
-      const items=traceResultItems(result);
-      card.append(el("p","sleep-copy",items.length?"检索结果："+items.length+" 条":"本次检索没有返回匹配记忆。"));
-      for(const item of items.slice(0,8)){
-        const row=asRecord(item),title=row.title||row.memory_title||row.name||"检索结果";
-        const resultCard=el("div","source");resultCard.append(el("div","source-head",title));
-        const preview=row.preview||row.snippet||row.current_content_preview||row.content;if(preview)resultCard.append(el("p","source-note",preview));
-        const id=row.memory_id||row.id;if(id)technical(resultCard,"记忆 ID",id);card.append(resultCard);
-      }
-      if(items.length>8)card.append(el("p","sleep-copy","另有 "+(items.length-8)+" 条结果，原始模式可查看完整记录。"));
-    }
-    function renderMemoryReadEntry(card,data){
-      const request=asRecord(data.request),raw=data.memory||data.result||data.result_memory||data;
-      const record=asRecord(raw),memory=asRecord(record.memory||record.item||raw),revision=asRecord(memory.current_revision||record.current_revision||memory.revision||record.revision);
-      const title=revision.title||memory.title||record.title;
-      if(title)card.append(el("strong","",title));
-      const content=revision.content||memory.content||record.content;
-      if(content)card.append(el("p","body",content));
-      const memoryId=data.memory_id||request.memory_id||memory.memory_id||record.memory_id;
-      if(memoryId)technical(card,"记忆 ID",memoryId);
-      if(!title&&!content)card.append(el("p","sleep-copy","记录了记忆回读；摘要字段未包含标题或正文。"));
-      const evidence=record.evidence||data.evidence;if(evidence!==undefined)renderEvidenceList(card,evidence);
-    }
-    function renderEvidenceList(parent,raw){
-      const records=traceResultItems(raw),totalMessages=records.reduce((total,item)=>{
-        const row=asRecord(item),messages=Array.isArray(row.messages)?row.messages:[];return total+messages.length;
-      },0);
-      parent.append(el("p","sleep-copy","来源记录："+records.length+" 份 · 消息快照："+totalMessages+" 条"));
-      for(const item of records.slice(0,8)){
-        const row=asRecord(item),card=el("div","source"),head=el("div","source-head"),messages=Array.isArray(row.messages)?row.messages:[];
-        head.append(el("strong","",row.title||("来源记录 · "+messages.length+" 条消息")));card.append(head);
-        for(const message of messages.slice(0,5)){
-          const snapshot=asRecord(message.snapshot||message),text=snapshot.text||snapshot.content||snapshot.processed_plain_text;
-          if(!text)continue;
-          const who=snapshot.sender_cardname||snapshot.sender_name||snapshot.speaker;
-          const when=snapshot.message_time_local||snapshot.time||message.observed_at;
-          card.append(el("p","meta",[who,when?date(when):null].filter(Boolean).join(" · ")),el("p","source-note",text));
-        }
-        if(row.evidence_id)technical(card,"来源 ID",row.evidence_id);parent.append(card);
-      }
-      if(records.length>8)parent.append(el("p","sleep-copy","另有 "+(records.length-8)+" 份来源记录，原始模式可查看完整内容。"));
-    }
-    function renderModelStep(parent,rawStep,claims){
-      const step=asRecord(rawStep),type=String(step.step_type||step.action_type||step.tool||"").toUpperCase();
-      if(type==="SEARCH"){
-        const card=el("article","sleep-action");card.append(el("h4","","模型请求检索"));
-        const query=step.query;if(query)card.append(el("p","sleep-copy","检索内容："+query));
-        for(const request of Array.isArray(step.queries)?step.queries:[]){const row=asRecord(request);if(row.query)card.append(el("p","sleep-copy","检索内容："+row.query));addCandidateFacts(card,row.candidate_ids,claims)}
-        addCandidateFacts(card,step.candidate_ids,claims);technical(card,"查询参数",rawStep);parent.append(card);return;
-      }
-      if(type==="MEMORY_READ"){
-        const card=el("article","sleep-action");card.append(el("h4","","模型请求读取记忆"));
-        if(step.memory_id)technical(card,"记忆 ID",step.memory_id);if(step.view)addFact(card,"视图 "+step.view);parent.append(card);return;
-      }
-      if(type==="EVIDENCE_READ"){
-        const card=el("article","sleep-action");card.append(el("h4","","模型请求读取来源"));
-        const ids=step.evidence_ids;if(Array.isArray(ids))addFact(card,ids.length+" 条来源");if(ids)technical(card,"来源 ID",ids);parent.append(card);return;
-      }
-      if(type==="MESSAGE_CONTEXT_READ"){
-        const card=el("article","sleep-action");card.append(el("h4","","模型请求查看原始聊天前后文"));
-        addFact(card,"前 "+(step.before??8)+" 条 · 后 "+(step.after??8)+" 条 · 核对回复目标");
-        technical(card,"来源与消息参数",rawStep);parent.append(card);return;
-      }
-      if(type==="DECIDE"){
-        const actions=Array.isArray(step.actions)?step.actions:[];
-        const wrap=el("div");wrap.append(el("p","sleep-copy","模型提出的决定；以下内容尚不能单独证明已经写入。"));
-        for(const action of actions)actionCard(wrap,action,claims,"拟定");
-        if(!actions.length)technical(wrap,"结构化输出",rawStep);parent.append(wrap);return;
-      }
-      if(sleepActionLabels[type]){actionCard(parent,step,claims,"模型输出，待核验执行");return}
-      const card=el("article","sleep-action");card.append(el("h4","","模型输出步骤"+(type?" · "+type:"")));technical(card,"结构化输出",rawStep);parent.append(card);
-    }
-    function renderTraceEvent(parent,event,claims){
-      const name=String(event?.event||"unknown"),key=name.toUpperCase(),data=asRecord(event?.data),card=el("article","sleep-entry"),head=el("div","sleep-entry-head");
-      let heading=sleepEventLabels[name]||sleepEventLabels[key]||"运行记录",tone="";
-      if(name==="protocol_error"||name==="model_error"){tone=" warn";card.classList.add("warn")}
-      if(name==="action_end"||name==="self_check"||name==="readback"){tone=" done";card.classList.add("done")}
-      const step=Number.isFinite(Number(data.step))&&data.step!==undefined?" · 第 "+data.step+" 步":"";
-      head.append(el("strong","",heading+step),el("span","sleep-time",date(event?.time)));card.append(head);
-      if(data.redacted===true){
-        card.append(el("p","sleep-notice","关联来源已隐私删除，本会话详细内容已清除。"));
-      }else if(name.startsWith("persona_")){
-        if(data.impression)card.append(el("p","body",data.impression));
-        const decision=asRecord(data.decision);
-        if(decision.impression_text)card.append(el("p","body",decision.impression_text));
-        if(data.reason||decision.reason)card.append(el("p","sleep-copy",data.reason||decision.reason));
-        if(data.model_calls!==undefined)addFact(card,"模型调用 "+data.model_calls+" 次");
-        if(data.elapsed_seconds!==undefined)addFact(card,"耗时 "+Number(data.elapsed_seconds).toFixed(1)+" 秒");
-        if(name==="persona_model_input")card.append(el("p","sleep-copy","结合核心人物印象与正式记忆，判断是否需要更新。"));
-        technical(card,"查看人物印象审查详情",data);
-      }else if(name==="model_input"){
-        card.append(el("p","sleep-copy","Sleep 请求模型结合当前上下文给出下一步。"));
-        const prompt=data.prompt||data.payload;if(prompt)technical(card,"查看当时模型输入",prompt);
-      }else if(name==="model_output"||name==="post_action_review_output"){
-        if(name==="post_action_review_output")card.append(el("p","sleep-copy","已写入后再次对照真实来源；此处忽略表示正文无需纠正。"));
-        let steps=parsed(data.steps);
-        if(!Array.isArray(steps)&&data.raw_response)steps=parsed(data.raw_response);
-        if(Array.isArray(steps)){for(const stepValue of steps)renderModelStep(card,parsed(stepValue),claims)}
-        else{card.append(el("p","sleep-copy","已记录模型响应，但无法解析为已知步骤类型。"));if(data.raw_response)technical(card,"模型原始响应",data.raw_response);else technical(card,"模型输出字段",data)}
-      }else if(name==="overall_summary"){
-        if(data.status)addFact(card,"状态 "+label(String(data.status).toUpperCase()));
-        if(data.elapsed_seconds!==undefined)addFact(card,"整轮耗时 "+Number(data.elapsed_seconds).toFixed(1)+" 秒");
-        if(data.sleep_llm_calls!==undefined)addFact(card,"记忆整理调用 "+data.sleep_llm_calls+" 次");
-        if(data.persona_llm_calls!==undefined)addFact(card,"人物印象调用 "+data.persona_llm_calls+" 次");
-      }else if(name==="post_action_review_input"){
-        card.append(el("p","sleep-copy","把已执行的动作、正式记忆回读和原始消息交给模型，检查人物、时间、计划及陈述归属。"));
-        technical(card,"查看实际复核输入",data.prompt||data);
-      }else if(name.startsWith("post_action_")){
-        if(data.error||data.reason)card.append(el("p","sleep-copy",data.error||data.reason));
-        if(data.correction_count!==undefined)addFact(card,"需要纠正 "+data.correction_count+" 条");
-        if(data.writes_committed)card.append(el("p","sleep-copy","已有正式写入保留，未完成的复核将再次处理。"));
-        technical(card,"查看执行后复核记录",data);
-      }else if(name==="protocol_error"){
-        card.append(el("p","sleep-copy",data.message||data.error||"模型输出未满足 Sleep 协议，需要修正。"));
-        if(data.received)technical(card,"收到的内容",data.received);
-      }else if(name==="model_error"){
-        card.append(el("p","sleep-copy",data.error||data.message||"模型调用失败，未形成可展示的步骤输出。"));
-      }else if(name==="group_decision"){
-        card.append(el("p","sleep-copy","校验后的分组决定；是否落库仍以数据库操作记录为准。"));
-        for(const action of Array.isArray(data.actions)?data.actions:[])actionCard(card,action,claims,"决定");
-      }else if(name==="action_start"){
-        const action=data.action||data.intent;if(action)actionCard(card,action,claims,"开始执行");
-        else card.append(el("p","sleep-copy","动作执行已开始。"));
-      }else if(name==="action_end"){
-        card.append(el("p","sleep-copy","执行器记录了动作完成；实际写入正文见下方数据库操作与回读。"));
-        if(data.action_type)addFact(card,"动作 "+actionName(data.action_type));
-        if(Array.isArray(data.target_memory_ids))addFact(card,data.target_memory_ids.length+" 条目标记忆");
-        if(data.target_memory_ids)technical(card,"目标记忆 ID",data.target_memory_ids);
-      }else if(key==="SEARCH"){
-        renderSearchEntry(card,{...data,claims});
-      }else if(key==="MEMORY_READ"){
-        renderMemoryReadEntry(card,data);
-      }else if(key==="EVIDENCE_READ"){
-        const request=asRecord(data.request),ids=data.evidence_ids||request.evidence_ids;
-        if(Array.isArray(ids))addFact(card,"读取 "+ids.length+" 条来源");if(ids)technical(card,"来源 ID",ids);
-        const result=data.results!==undefined?data.results:data.result;if(result!==undefined)renderEvidenceList(card,result);
-        else card.append(el("p","sleep-copy","记录了来源回读请求，结果详情未附在此事件中。"));
-      }else if(key==="MESSAGE_CONTEXT_READ"){
-        const result=asRecord(data.result),messages=Array.isArray(result.messages)?result.messages:[];
-        card.append(el("p","sleep-copy","读取同一聊天的来源前后文及回复目标，共 "+messages.length+" 条消息；读取本身不会保存整段聊天。"));
-        const status=asRecord(result.context_status);
-        if(status.core_window==="anchor_missing")card.append(el("p","sleep-notice","原聊天中的锚点已不可用，现有快照无法代表完整前后文。"));
-        renderEvidenceList(card,[{title:"实际读到的聊天",messages}]);technical(card,"完整聊天与读取状态",result);
-      }else if(name==="context_sources_saved"){
-        const ids=Array.isArray(data.message_ids)?data.message_ids:[];
-        card.append(el("p","sleep-copy","已为本次实际引用的 "+ids.length+" 条消息保存关联证据，包含必要回复目标。"));
-        technical(card,"已关联的来源与消息 ID",data);
-      }else if(name==="self_check"||name==="readback"){
-        card.classList.add("done");
-        if(data.memory_id)technical(card,"回读记忆 ID",data.memory_id);
-        if(data.evidence_count!==undefined)addFact(card,"核对 "+data.evidence_count+" 条来源");
-        if(data.result||data.memory||data.result_memories)renderMemoryReadEntry(card,data);
-        else if(Array.isArray(data.evidence)){renderEvidenceList(card,data.evidence);if(data.candidate_evidence_ids)technical(card,"候选来源 ID",data.candidate_evidence_ids)}
-        else card.append(el("p","sleep-copy","已记录执行后回读核对；正文以数据库操作的版本快照为准。"));
-      }else if(name==="recent_formal_memories"){
-        const memories=Array.isArray(data.memories)?data.memories:[];card.append(el("p","sleep-copy","本轮预读近期正式记忆："+memories.length+" 条。"));
-        for(const memory of memories.slice(0,8)){const item=asRecord(memory);card.append(el("p","sleep-copy",(item.title||"正式记忆")+(item.content?" · "+item.content:"")))}
-        if(memories.length>8)card.append(el("p","sleep-copy","另有 "+(memories.length-8)+" 条。"));
-      }else if(name==="session_start"||name==="group_start"){
-        const ids=data.candidate_ids||data.candidates;if(Array.isArray(ids))addCandidateFacts(card,ids,claims);
-        if(data.trigger_type)addFact(card,"触发方式 "+label(data.trigger_type));
-      }else if(name==="session_end"){
-        if(data.status)addFact(card,"状态 "+label(String(data.status).toUpperCase()));if(data.error||data.error_summary)card.append(el("p","sleep-copy",data.error||data.error_summary));
-      }else if(name==="PERSON_LOOKUP"){
-        const result=data.result||data.results;if(result!==undefined)card.append(el("p","sleep-copy",typeof result==="string"?result:"已回读人物资料。"));else card.append(el("p","sleep-copy","记录了人物资料查询。"));
-      }else{
-        const request=data.request||data.query||data.action;if(request)card.append(el("p","sleep-copy",typeof request==="string"?request:jsonText(request)));
-        const result=data.result||data.results;if(result!==undefined)card.append(el("p","sleep-copy","已记录工具结果。"));
-        technical(card,"事件数据",event?.data);
-      }
-      const candidateIds=data.candidate_ids;if(candidateIds&&!(["group_decision","action_start"].includes(name)))addCandidateFacts(card,candidateIds,claims);
-      parent.append(card);
-    }
-    function renderTrace(parent,x){
-      const area=section(parent,"Sleep 实际过程"),events=Array.isArray(x.trace_events)?x.trace_events:[];
-      if(x.trace_notice)area.append(el("p","sleep-notice",x.trace_notice));
-      else if(x.trace_available===false)area.append(el("p","sleep-notice","此会话没有可读取的实际对话记录；下方只展示数据库操作与版本回读，不会补造模型对话。"));
-      if(!events.length){area.append(el("div","trace-empty","没有已保存的过程事件。可在数据库操作与版本回读中查看实际执行结果。"));return}
-      const timeline=el("div","sleep-timeline");for(const event of events)renderTraceEvent(timeline,event,x.claims||[]);area.append(timeline);
-    }
-    function renderResultMemory(parent,memory){
-      const item=asRecord(memory),stale=item.is_current===false,card=el("article","sleep-memory"+(stale?" stale":"")),title=el("h4","",item.title||"已写入记忆");
-      const top=el("div","record-top");top.append(title);if(item.status)top.append(sleepStatus(item.status));card.append(top);
-      card.append(el("p","meta",item.revision_no?"本次版本 · 第 "+item.revision_no+" 版":"本次版本"));
-      if(item.revision_id)technical(card,"版本 ID",item.revision_id);
-      if(stale)card.append(el("p","sleep-notice","这是本次整理时的版本，当前记忆已更新。打开详情会查看当前记忆。"));
-      if(item.content)card.append(el("p","body",item.content));else card.append(el("p","sleep-copy","本次版本正文不可用。"));
-      if(item.memory_id){technical(card,"记忆 ID",item.memory_id);const open=el("button","memory-open","查看记忆详情");open.type="button";open.addEventListener("click",()=>go("memories",item.memory_id));card.append(open)}
-      parent.append(card);
-    }
-    function renderOperations(parent,x){
-      const area=section(parent,"数据库操作与版本回读"),operations=Array.isArray(x.operations)?x.operations:[];
-      if(!operations.length){area.append(el("p","empty","没有数据库操作记录。模型计划本身不代表执行成功。"));return}
-      for(const operation of operations){
-        const op=asRecord(operation),card=el("article","audit"),head=el("div","record-top"),intent=asRecord(op.intent),action=asRecord(intent.action||intent),memories=Array.isArray(op.result_memories)?op.result_memories:[];
-        head.append(el("strong","",actionName(op.action_type||action.action_type)+(memories[0]?.title?" · "+memories[0].title:"")),sleepStatus(op.status));card.append(head);
-        card.append(el("p","meta",date(op.created_at)+(op.updated_at?" · 更新于 "+date(op.updated_at):"")));
-        actionCard(card,action,x.claims||[],"数据库操作");
-        if(op.error)card.append(el("p","source-note",op.error));
-        if(memories.length){for(const memory of memories)renderResultMemory(card,memory)}
-        else if(["DEFER","IGNORE","RELATE"].includes(String(op.action_type||action.action_type||"").toUpperCase()))card.append(el("p","sleep-copy","此类操作没有创建或更新正式记忆正文。"));
-        else if(op.memory_readback_available===false)card.append(el("p","sleep-notice","本次记忆正文回读不可用；执行状态以数据库操作状态为准。"));
-        else if(op.memory_readback_available===true)card.append(el("p","sleep-copy","此操作没有关联到可展示的记忆正文版本。"));
-        else card.append(el("p","sleep-copy","接口未提供本次版本正文回读信息；不会用当前版本代替本次结果。"));
-        const result=op.result;if(result!==undefined)technical(card,"数据库结果字段",result);
-        const ids={};for(const key of ["operation_key","candidate_id"]){if(op[key]!==undefined)ids[key]=op[key]}
-        if(Object.keys(ids).length)technical(card,"操作技术 ID",ids);area.append(card);
-      }
-    }
-    function renderReadableSleep(target,x){
-      const info=section(target,"会话信息"),meta=el("p","meta","模型任务 "+(x.model_id||"未记录")+" · 提示版本 "+(x.prompt_version||"未知"));
-      info.append(meta);if(x.error_summary)info.append(el("p","source-note",x.error_summary));
-      technical(info,"会话技术信息",{sleep_session_id:x.sleep_session_id,started_at:x.started_at,finished_at:x.finished_at,trigger_type:x.trigger_type});
-      const claims=section(target,"候选认领");if(!Array.isArray(x.claims)||!x.claims.length)claims.append(el("p","empty","没有候选认领记录。"));
-      for(const claim of x.claims||[]){const card=el("article","audit"),top=el("div","record-top");top.append(el("strong","",claim.candidate_title||"候选记录"),sleepStatus(claim.outcome||"PROCESSING"));card.append(top,el("p","meta",date(claim.claimed_at)+(claim.released_at?" · 释放于 "+date(claim.released_at):"")));technical(card,"候选 ID",claim.candidate_id);claims.append(card)}
-      renderTrace(target,x);renderOperations(target,x);
-    }
-    function rawBlock(parent,title,value){
-      const area=section(parent,title),pre=el("pre","code",jsonText(value));area.append(pre);
-    }
-    function renderRawSleep(target,x){
-      const traceAvailable=x.trace_available===true,notice=x.trace_notice||(!traceAvailable?"此会话没有可读取的完整实际对话记录；原始视图不会补造模型输入或工具过程。":"");
-      if(notice)target.append(el("p","sleep-notice",notice));
-      rawBlock(target,"原始 Trace 事件",Array.isArray(x.trace_events)?x.trace_events:[]);
-      rawBlock(target,"数据库操作 JSON",Array.isArray(x.operations)?x.operations:[]);
-      rawBlock(target,"候选认领 JSON",Array.isArray(x.claims)?x.claims:[]);
-      rawBlock(target,"计划 JSON",Array.isArray(x.plans)?x.plans:[]);
-      rawBlock(target,"已提交动作 JSON",Array.isArray(x.actions)?x.actions:[]);
-    }
-    async function sleep(){
-      const p=split("Sleep 会话"),h=heading("Sleep sessions","Sleep 会话","查看每步检索、模型决定、实际操作和最终写入的记忆正文。");
-      const run=el("button","primary","整理新候选");run.type="button";run.title="只整理新聊天候选，旧积压继续保留。";
-      run.addEventListener("click",async()=>{run.disabled=true;run.textContent="正在查证与整理…";try{const result=await api("/engram-memory/api/sleep/run",{method:"POST",headers:{Accept:"application/json","Content-Type":"application/json"},body:"{}"});if(result.ran){state.id=result.sleep_session_id;await sleep()}else{run.disabled=false;run.textContent="整理新候选";message(p.right,"empty","当前没有可整理的新候选。")}}catch(e){run.disabled=false;run.textContent="整理新候选";message(p.right,"error",e.message)}});h.append(run);
-      const r=await api("/engram-memory/api/sleep?limit=60");p.list.replaceChildren();if(!r.items.length)message(p.list,"empty","尚无 Sleep 会话记录。");
-      for(const x of r.items)p.list.append(record(x,"sleep_session_id",label(x.trigger_type),x.candidate_count+" 条候选",[date(x.started_at),x.prompt_version],()=>{state.id=x.sleep_session_id;detailSleep(p.right,x.sleep_session_id)}));
-      root.replaceChildren(h,p.grid);if(state.id)detailSleep(p.right,state.id);
-    }
-    async function detailSleep(target,id){
-      message(target,"loading","正在读取会话审计…");
-      try{
-        const r=await api("/engram-memory/api/sleep/"+encodeURIComponent(id)),x=r.item;target.replaceChildren();
-        const head=el("div","detail-head");head.append(el("p","eyebrow","Sleep run"),el("h2","",label(x.trigger_type)));
-        const meta=el("div","meta");meta.append(sleepStatus(x.status),el("span","",date(x.started_at)),el("span","",x.candidate_count+" 条候选"));head.append(meta);target.append(head);
-        const toolbar=el("div","sleep-toolbar"),modeLabel=el("span","sleep-toolbar-label","详情显示方式"),group=el("div","sleep-mode");group.setAttribute("role","group");group.setAttribute("aria-label","Sleep 会话详情显示方式");
-        const content=el("div","sleep-content");
-        for(const [mode,text] of [["readable","可读"],["raw","原始"]]){
-          const button=el("button","",text);button.type="button";button.setAttribute("aria-pressed",String(state.sleepMode===mode));button.dataset.mode=mode;
-          button.addEventListener("click",()=>{state.sleepMode=button.dataset.mode;for(const option of group.querySelectorAll("button"))option.setAttribute("aria-pressed",String(option===button));content.replaceChildren();if(state.sleepMode==="raw")renderRawSleep(content,x);else renderReadableSleep(content,x)});group.append(button);
-        }
-        toolbar.append(modeLabel,group);target.append(toolbar,content);
-        if(state.sleepMode==="raw")renderRawSleep(content,x);else renderReadableSleep(content,x);
-      }catch(e){message(target,"error",e.message)}
-    }
     async function personas(){
-      const h=heading("Person impressions","人物印象","读取核心数据库的人物印象；Sleep 在正式记忆整理后审查并更新。"),panel=el("section","panel"),grid=el("div","persona-grid");
+      const h=heading("Person impressions","人物印象","核心人物印象及其正式记忆依据。"),panel=el("section","panel"),grid=el("div","persona-grid");
       panel.append(filter("按人物或印象内容查找",null),grid);
       const r=await api("/engram-memory/api/personas?"+new URLSearchParams({q:state.q,limit:"100"}));if(!r.items.length)message(grid,"empty","没有已保存的人物印象。");
-      for(const x of r.items){const c=el("article","persona");c.append(el("p","eyebrow","人物印象"),el("h3","",x.display_name||"称呼未记录"),el("p","persona-id mono","核心 ID · "+x.person_id),el("p","body",x.impression));const m=el("p","meta","更新于 "+date(x.updated_at));if(x.last_sleep_session_id)m.append(el("span","mono"," · Sleep "+x.last_sleep_session_id));c.append(m);grid.append(c)}
+      for(const x of r.items){const c=el("article","persona");c.append(el("p","eyebrow","人物印象"),el("h3","",x.display_name||"称呼未记录"),el("p","persona-id mono","核心 ID · "+x.person_id),el("p","body",x.impression));const ids=[...new Set((x.impression||"").match(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi)||[])];for(const id of ids){const open=el("button","memory-open mono","Memory ID · "+id);open.type="button";open.addEventListener("click",()=>go("memories",id));c.append(open)}c.append(el("p","meta","更新于 "+date(x.updated_at)));grid.append(c)}
       root.replaceChildren(h,panel);
     }
     function go(view,selectedId=null){state.view=view;state.id=selectedId;state.q="";state.status=selectedId&&view==="memories"?"ALL":"";crumb.textContent=titles[view];for(const b of document.querySelectorAll(".nav"))b.setAttribute("aria-current",b.dataset.view===view?"page":"false");render()}

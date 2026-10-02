@@ -1,10 +1,4 @@
-"""Engram Memory vNext 纯工程一致性检查与派生数据修复服务。
-
-Doctor 将 Canonical 数据库视为唯一事实源。它只修复能够从 Canonical
-数据确定性重建的 Retrieval / Vector 派生数据，以及符合 Sleep Recovery
-规则的运行时 Candidate 状态；对认知内容、当前指针、Subject、Evidence、
-Merge 血缘和外部 Message 软引用只报告问题。
-"""
+"""检查正式记忆、证据、检索入口及向量派生数据的一致性。"""
 
 from __future__ import annotations
 
@@ -17,25 +11,18 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .candidate_service import SleepSessionService
 from .enums import (
-    CandidateActionType,
-    CandidateStatus,
     MemoryStatus,
     OutboxObjectType,
     OutboxOperation,
     OutboxStatus,
     RelationType,
     RetrievalEntryType,
-    SleepSessionStatus,
     SubjectKind,
     VectorIndexStatus,
 )
 from .memory_service import RETRIEVAL_GENERATOR_VERSION
 from .models import (
-    CandidateActionModel,
-    CandidateEvidenceModel,
-    CandidateModel,
     EvidenceMessageLinkModel,
     EvidenceMessageSnapshotModel,
     EvidenceModel,
@@ -45,7 +32,6 @@ from .models import (
     MemoryRevisionModel,
     MemoryRevisionSubjectModel,
     RevisionEvidenceModel,
-    SleepSessionModel,
     VectorIndexManifestModel,
     VectorOutboxModel,
 )
@@ -66,9 +52,6 @@ _REVISION_ENTRY_TYPES = frozenset(
         RetrievalEntryType.CURRENT_REVISION,
         RetrievalEntryType.HISTORICAL_REVISION,
     }
-)
-_TERMINAL_ACTIONS = frozenset(
-    {CandidateActionType.IGNORE, CandidateActionType.DEFER}
 )
 _ACTIVE_OUTBOX_STATUSES = frozenset(
     {OutboxStatus.PENDING, OutboxStatus.PROCESSING, OutboxStatus.FAILED}
@@ -110,7 +93,6 @@ class DoctorRepairResult:
 
     before: DoctorReport
     after: DoctorReport
-    recovered_candidate_ids: tuple[str, ...]
     retried_outbox_entry_ids: tuple[str, ...]
     unrepaired_issue_codes: tuple[str, ...]
 
@@ -126,11 +108,7 @@ class _CanonicalSnapshot:
     revision_evidence: tuple[RevisionEvidenceModel, ...]
     evidence_links: tuple[EvidenceMessageLinkModel, ...]
     evidence_snapshots: tuple[EvidenceMessageSnapshotModel, ...]
-    candidate_evidence: tuple[CandidateEvidenceModel, ...]
     relations: tuple[MemoryRelationModel, ...]
-    candidates: tuple[CandidateModel, ...]
-    sessions: tuple[SleepSessionModel, ...]
-    actions: tuple[CandidateActionModel, ...]
     retrieval_entries: tuple[MemoryRetrievalEntryModel, ...]
     outbox: tuple[VectorOutboxModel, ...]
     manifests: tuple[VectorIndexManifestModel, ...]
@@ -144,17 +122,15 @@ class DoctorService:
         schema: VNextSchema,
         *,
         vector_service: VectorIndexService,
-        sleep_service: SleepSessionService | None = None,
         embedding_model_id: str,
         embedding_dimension: int,
         retrieval_schema_version: str,
     ) -> None:
-        """绑定 Schema、向量服务、候选恢复服务和当前索引参数。
+        """绑定 Schema、向量服务和当前索引参数。
 
         参数:
             schema: vNext Canonical 数据库。
             vector_service: 负责 Outbox 投递和向量索引重建的服务。
-            sleep_service: 候选恢复服务；未提供时 Doctor 创建等价实例。
             embedding_model_id: 当前期望的向量模型标识。
             embedding_dimension: 当前期望的向量维度。
             retrieval_schema_version: 当前期望的检索结构版本。
@@ -170,7 +146,6 @@ class DoctorService:
             raise ValueError("retrieval_schema_version 不能为空")
         self._schema = schema
         self._vector_service = vector_service
-        self._sleep_service = sleep_service or SleepSessionService(schema)
         self._embedding_model_id = embedding_model_id
         self._embedding_dimension = embedding_dimension
         self._retrieval_schema_version = retrieval_schema_version
@@ -183,56 +158,8 @@ class DoctorService:
         issues.extend(await self._check_physical_vector(snapshot))
         return DoctorReport(tuple(issues))
 
-    async def _check_physical_vector(
-        self,
-        snapshot: _CanonicalSnapshot,
-    ) -> list[DoctorIssue]:
-        """Compare an inspectable physical index with ACTIVE Canonical entries."""
-        active_manifests = tuple(
-            row for row in snapshot.manifests if row.status is VectorIndexStatus.ACTIVE
-        )
-        if len(active_manifests) != 1:
-            return []
-        manifest = active_manifests[0]
-        physical_ids = await self._vector_service.physical_entry_ids(
-            manifest.index_id,
-            manifest.embedding_model_id,
-            manifest.embedding_dimension,
-        )
-        if physical_ids is None:
-            return [
-                _issue(
-                    "VECTOR_PHYSICAL_UNCHECKABLE",
-                    manifest.index_id,
-                    "无法检查 ACTIVE Manifest 绑定的物理向量索引",
-                    False,
-                )
-            ]
-        active_memory_ids = {
-            row.memory_id
-            for row in snapshot.memories
-            if row.status is MemoryStatus.ACTIVE
-        }
-        expected_ids = {
-            row.entry_id
-            for row in snapshot.retrieval_entries
-            if row.memory_id in active_memory_ids
-        }
-        if physical_ids == expected_ids:
-            return []
-        missing = sorted(expected_ids - physical_ids)
-        extra = sorted(physical_ids - expected_ids)
-        return [
-            _issue(
-                "VECTOR_PHYSICAL_DRIFT",
-                manifest.index_id,
-                f"物理向量入口漂移: missing={missing[:20]!r}, extra={extra[:20]!r}",
-                True,
-            )
-        ]
-
     async def repair(self, outbox_limit: int = 20) -> DoctorRepairResult:
-        """执行确定性的派生修复和允许的候选恢复，再返回复查结果。
+        """执行检索入口、Outbox 和向量索引的确定性修复并复查。
 
         Canonical 认知损坏不会被修改。Retrieval Entry 会从可用的
         Canonical Memory/Revision 重建；FAILED Outbox 只会重试仍能定位到
@@ -247,7 +174,6 @@ class DoctorService:
         if outbox_limit <= 0:
             raise ValueError("outbox_limit 必须大于 0")
         before = await self.check()
-        recovered = await self.recover_candidates()
         await self.rebuild_retrieval_entries()
         await self._repair_outbox_metadata()
         retried = await self.retry_failed_outbox(outbox_limit)
@@ -257,24 +183,11 @@ class DoctorService:
         return DoctorRepairResult(
             before=before,
             after=after,
-            recovered_candidate_ids=recovered,
             retried_outbox_entry_ids=retried,
             unrepaired_issue_codes=_unique_strings(
                 issue.code for issue in after.issues
             ),
         )
-
-    async def recover_candidates(self) -> tuple[str, ...]:
-        """按 Sleep Recovery 规则释放可恢复的卡住候选。
-
-        现有 SleepSessionService 负责带有 Session ID 的标准恢复路径；
-        Doctor 额外处理没有 Session ID 的损坏 PROCESSING 行，因为该行
-        无法被标准认领查询选出，但仍满足“无运行会话、无终态动作”的
-        显式恢复条件。
-        """
-        recovered = list(await self._sleep_service.recover_interrupted_candidates())
-        recovered.extend(await self._recover_sessionless_candidates())
-        return _unique_strings(recovered)
 
     async def rebuild_retrieval_entries(self) -> tuple[str, ...]:
         """从 Canonical Memory/Revision 重建可确定的核心 Retrieval Entry。
@@ -285,7 +198,7 @@ class DoctorService:
         说明:
             当前指针不完整时不会推测替代版本。TAG 和 GENERATED_CUE
             没有本地 Canonical 生成源，因此保留而不猜测其内容；核心
-            ANCHOR/Revision 入口则按稳定键原位校正或补建。
+            Revision 入口按稳定键原位校正或补建。
         """
         changed_memory_ids: list[str] = []
         async with self._schema.database.session() as session:
@@ -349,8 +262,7 @@ class DoctorService:
         仍会在下一次检查中报告；这避免 Doctor 凭空制造派生或认知对象。
         """
         if limit <= 0:
-            raise ValueError("outbox limit 必须大于 0")
-
+            return ()
         selected_outbox_ids: list[str] = []
         selected_entry_ids: list[str] = []
         async with self._schema.database.session() as session:
@@ -359,18 +271,13 @@ class DoctorService:
                     await session.scalars(
                         select(VectorOutboxModel)
                         .where(VectorOutboxModel.status == OutboxStatus.FAILED)
-                        .order_by(
-                            VectorOutboxModel.updated_at,
-                            VectorOutboxModel.outbox_id,
-                        )
+                        .order_by(VectorOutboxModel.updated_at, VectorOutboxModel.outbox_id)
                     )
                 ).all()
             )
             entries = {
                 entry.entry_id: entry
-                for entry in (
-                    await session.scalars(select(MemoryRetrievalEntryModel))
-                ).all()
+                for entry in (await session.scalars(select(MemoryRetrievalEntryModel))).all()
             }
             now = datetime.now(UTC)
             for outbox in failed:
@@ -394,9 +301,53 @@ class DoctorService:
             return ()
         succeeded = await self._process_selected_outbox(selected_outbox_ids)
         selected = set(selected_entry_ids)
-        return _unique_strings(
-            entry_id for entry_id in succeeded if entry_id in selected
+        return _unique_strings(entry_id for entry_id in succeeded if entry_id in selected)
+
+    async def _check_physical_vector(
+        self,
+        snapshot: _CanonicalSnapshot,
+    ) -> list[DoctorIssue]:
+        """检查可读取的物理向量索引与 ACTIVE Canonical 入口是否一致。"""
+        active_manifests = tuple(
+            row for row in snapshot.manifests if row.status is VectorIndexStatus.ACTIVE
         )
+        if len(active_manifests) != 1:
+            return []
+        manifest = active_manifests[0]
+        physical_ids = await self._vector_service.physical_entry_ids(
+            manifest.index_id,
+            manifest.embedding_model_id,
+            manifest.embedding_dimension,
+        )
+        if physical_ids is None:
+            return [
+                _issue(
+                    "VECTOR_PHYSICAL_UNCHECKABLE",
+                    manifest.index_id,
+                    "无法检查 ACTIVE Manifest 绑定的物理向量索引",
+                    False,
+                )
+            ]
+        active_memory_ids = {
+            row.memory_id for row in snapshot.memories if row.status is MemoryStatus.ACTIVE
+        }
+        expected_ids = {
+            row.entry_id
+            for row in snapshot.retrieval_entries
+            if row.memory_id in active_memory_ids
+        }
+        if physical_ids == expected_ids:
+            return []
+        missing = sorted(expected_ids - physical_ids)
+        extra = sorted(physical_ids - expected_ids)
+        return [
+            _issue(
+                "VECTOR_PHYSICAL_DRIFT",
+                manifest.index_id,
+                f"物理向量入口漂移: missing={missing[:20]!r}, extra={extra[:20]!r}",
+                True,
+            )
+        ]
 
     async def _load_snapshot(self, session: AsyncSession) -> _CanonicalSnapshot:
         """在一个数据库会话中读取 Doctor 所需的全部表行。"""
@@ -408,11 +359,7 @@ class DoctorService:
             revision_evidence=await _all(session, RevisionEvidenceModel),
             evidence_links=await _all(session, EvidenceMessageLinkModel),
             evidence_snapshots=await _all(session, EvidenceMessageSnapshotModel),
-            candidate_evidence=await _all(session, CandidateEvidenceModel),
             relations=await _all(session, MemoryRelationModel),
-            candidates=await _all(session, CandidateModel),
-            sessions=await _all(session, SleepSessionModel),
-            actions=await _all(session, CandidateActionModel),
             retrieval_entries=await _all(session, MemoryRetrievalEntryModel),
             outbox=await _all(session, VectorOutboxModel),
             manifests=await _all(session, VectorIndexManifestModel),
@@ -426,7 +373,6 @@ class DoctorService:
         issues.extend(_check_evidence(snapshot))
         issues.extend(_check_evidence_snapshots(snapshot))
         issues.extend(_check_merge_cycles(snapshot))
-        issues.extend(_check_stuck_candidates(snapshot))
         issues.extend(_check_retrieval_entries(snapshot))
         issues.extend(
             _check_outbox(snapshot, self._embedding_model_id)
@@ -757,8 +703,16 @@ class DoctorService:
         )
         return index_id
 
+    def _manifest_parameters(self) -> tuple[str, int, str]:
+        """返回当前向量清单的模型、维度和检索结构参数。"""
+        return (
+            self._embedding_model_id,
+            self._embedding_dimension,
+            self._retrieval_schema_version,
+        )
+
     async def _repair_physical_drift(self) -> str | None:
-        """Rebuild the active derived index when physical IDs drift."""
+        """物理入口 ID 漂移时重建当前派生索引。"""
         report = await self.check()
         if not any(issue.code == "VECTOR_PHYSICAL_DRIFT" for issue in report.issues):
             return None
@@ -779,44 +733,6 @@ class DoctorService:
             manifest.flashback_threshold,
         )
         return index_id
-
-    async def _recover_sessionless_candidates(self) -> tuple[str, ...]:
-        """恢复没有 processing Session ID 且无终态动作的 Candidate。"""
-        recovered: list[str] = []
-        async with self._schema.database.session() as session:
-            candidates = tuple(
-                (
-                    await session.scalars(
-                        select(CandidateModel).where(
-                            CandidateModel.status == CandidateStatus.PROCESSING,
-                            CandidateModel.processing_session_id.is_(None),
-                        )
-                    )
-                ).all()
-            )
-            for candidate in candidates:
-                terminal = (
-                    await session.scalars(
-                        select(CandidateActionModel.action_id).where(
-                            CandidateActionModel.candidate_id == candidate.candidate_id,
-                            CandidateActionModel.action_type.in_(_TERMINAL_ACTIONS),
-                        )
-                    )
-                ).first()
-                if terminal is not None:
-                    continue
-                candidate.status = CandidateStatus.PENDING
-                candidate.last_error = None
-                recovered.append(candidate.candidate_id)
-        return tuple(recovered)
-
-    def _manifest_parameters(self) -> tuple[str, int, str]:
-        """返回当前运行时认可的向量清单参数。"""
-        return (
-            self._embedding_model_id,
-            self._embedding_dimension,
-            self._retrieval_schema_version,
-        )
 
 
 async def _all(session: AsyncSession, model: type[_ModelT]) -> tuple[_ModelT, ...]:
@@ -1006,11 +922,6 @@ def _check_evidence(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
     """检查 Evidence 关系行和消息软引用的内部完整性。"""
     evidence_ids = {row.evidence_id for row in snapshot.evidence}
     revision_ids = {row.revision_id for row in snapshot.revisions}
-    candidate_ids = {row.candidate_id for row in snapshot.candidates}
-    evidence_by_candidate = _group_by(
-        snapshot.candidate_evidence,
-        lambda row: row.candidate_id,
-    )
     issues: list[DoctorIssue] = []
 
     for link in snapshot.revision_evidence:
@@ -1042,49 +953,24 @@ def _check_evidence(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
                     "消息软引用所属 Evidence 不存在",
                 )
             )
-
-    for candidate in snapshot.candidates:
-        if not evidence_by_candidate.get(candidate.candidate_id):
-            issues.append(
-                _issue(
-                    "CANDIDATE_EVIDENCE_MISSING",
-                    candidate.candidate_id,
-                    "Candidate 没有来源 Evidence",
-                )
-            )
-
-    for link in snapshot.candidate_evidence:
-        if link.candidate_id not in candidate_ids:
-            issues.append(
-                _issue(
-                    "CANDIDATE_EVIDENCE_CANDIDATE_DANGLING",
-                    link.candidate_id,
-                    "Candidate Evidence 指向不存在的 Candidate",
-                )
-            )
-        if link.evidence_id not in evidence_ids:
-            issues.append(
-                _issue(
-                    "CANDIDATE_EVIDENCE_DANGLING",
-                    link.candidate_id,
-                    f"Candidate Evidence {link.evidence_id} 不存在",
-                )
-            )
     return issues
 
 
 def _check_evidence_snapshots(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
-    """Check linked source snapshots for availability and required structure.
+    """检查正式记忆来源快照的可用性、结构和引用标识。
 
-    This validates only the stored snapshot's local shape and link identity; it
-    cannot establish that an external message or its content is authentic.
+    未被正式版本引用的历史证据不参与快照可用性检查。
+    本地快照结构不能证明外部消息或其正文真实。
     """
+    formal_evidence_ids = {row.evidence_id for row in snapshot.revision_evidence}
     snapshots = {
         (row.stream_id, row.message_id): row
         for row in snapshot.evidence_snapshots
     }
     issues: list[DoctorIssue] = []
     for link in snapshot.evidence_links:
+        if link.evidence_id not in formal_evidence_ids:
+            continue
         source = snapshots.get((link.stream_id, link.message_id))
         if source is None:
             issues.append(
@@ -1201,43 +1087,6 @@ def _check_merge_cycles(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
                 f"MERGED_INTO 关系形成环: {relation.source_memory_id} -> {relation.target_memory_id}",
             )
         )
-    return issues
-
-
-def _check_stuck_candidates(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
-    """标记可按 Recovery 规则处理的 PROCESSING Candidate。"""
-    sessions = {row.sleep_session_id: row for row in snapshot.sessions}
-    terminal_by_claim: set[tuple[str, str]] = {
-        (row.candidate_id, row.sleep_session_id)
-        for row in snapshot.actions
-        if row.action_type in _TERMINAL_ACTIONS
-    }
-    terminal_by_candidate: set[str] = {
-        row.candidate_id
-        for row in snapshot.actions
-        if row.action_type in _TERMINAL_ACTIONS
-    }
-    issues: list[DoctorIssue] = []
-    for candidate in snapshot.candidates:
-        if candidate.status != CandidateStatus.PROCESSING:
-            continue
-        session_id = candidate.processing_session_id
-        session = sessions.get(session_id) if session_id is not None else None
-        if session is not None and session.status == SleepSessionStatus.RUNNING:
-            continue
-        if session_id is None and candidate.candidate_id in terminal_by_candidate:
-            continue
-        if session_id is not None and (candidate.candidate_id, session_id) in terminal_by_claim:
-            continue
-        if session is None:
-            reason = (
-                "processing_session_id 未设置"
-                if session_id is None
-                else f"processing_session_id={session_id!r} 指向不存在的 Session"
-            )
-        else:
-            reason = f"关联 Session 状态为 {session.status.value} 且没有终态 Action"
-        issues.append(_issue("STUCK_CANDIDATE", candidate.candidate_id, reason, True))
     return issues
 
 

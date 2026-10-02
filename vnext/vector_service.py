@@ -33,7 +33,7 @@ DEFAULT_VECTOR_UPSERT_BATCH_SIZE = 32
 
 @dataclass(frozen=True, slots=True)
 class _PreparedOutbox:
-    """已认领并完成 Canonical 校验的向量投递动作。"""
+    """已认领并完成正式检索入口校验的向量投递动作。"""
 
     outbox_id: str
     claim_token: str
@@ -45,11 +45,11 @@ class _PreparedOutbox:
 
 
 class VectorSink:
-    """向量库写入端 Protocol。"""
+    """向量索引写入端接口。"""
 
     @property
     def supports_batch_upsert(self) -> bool:
-        """返回 sink 是否能通过一次后端请求写入整批入口。"""
+        """返回写入端是否支持通过一次后端请求写入整批入口。"""
         return False
 
     async def upsert(self, item: VectorUpsert) -> None:
@@ -61,7 +61,7 @@ class VectorSink:
         raise NotImplementedError
 
     async def upsert_many(self, items: Sequence[VectorUpsert]) -> None:
-        """批量写入入口；未覆盖该方法的 sink 保持逐条兼容行为。"""
+        """逐条写入整批入口，写入端可覆盖此方法以使用后端批量请求。"""
         for item in items:
             await self.upsert(item)
 
@@ -79,17 +79,16 @@ class VectorSink:
         embedding_model_id: str,
         embedding_dimension: int,
     ) -> VectorSink:
-        """Return the sink view bound to one manifest's physical index.
+        """返回绑定指定索引清单的写入端视图。
 
-        In-memory test sinks can return themselves.  Durable sinks override
-        this method so an outbox item can never write to another manifest's
-        physical collection.
+        内存写入端可返回自身，持久化写入端需覆盖此方法，
+        确保投递项写入其索引清单对应的物理集合。
         """
         del index_id, embedding_model_id, embedding_dimension
         return self
 
     async def entry_ids(self) -> frozenset[str] | None:
-        """Return physical entry IDs when the sink can inspect its index."""
+        """返回物理索引的入口 ID；写入端不支持查询时返回 None。"""
         return None
 
 
@@ -128,15 +127,15 @@ class VectorIndexService:
         embedding_model_id: str,
         embedding_dimension: int,
     ) -> frozenset[str] | None:
-        """Inspect one manifest-bound physical index when supported by sink."""
+        """查询指定索引清单对应的物理入口 ID；不支持时返回 None。"""
         sink = self._sink.for_index(index_id, embedding_model_id, embedding_dimension)
         return await sink.entry_ids()
 
     async def reconcile_satisfied_outbox(self, index_id: str) -> tuple[str, ...]:
         """将已被完整 ACTIVE 物理索引覆盖的激活前工作项标记为完成。
 
-        只有物理 ID 集合与当前全部 ACTIVE Canonical Retrieval Entry 完全一致，
-        且工作项早于 Manifest 激活、模型和内容 hash 均匹配时才会对账。
+        只有物理 ID 集合与当前全部 ACTIVE 正式记忆检索入口完全一致，
+        且工作项早于索引清单激活、模型和内容摘要均匹配时才会对账。
         """
         if not index_id.strip():
             raise ValueError("index_id 不能为空")
@@ -403,7 +402,7 @@ class VectorIndexService:
                 )
 
         async def mark_succeeded(action: _PreparedOutbox) -> None:
-            """以 claim token 为栅栏完成一条投递。"""
+            """校验认领令牌后，将对应投递项标记为完成。"""
             async with self._schema.database.session() as session:
                 outbox = await session.get(VectorOutboxModel, action.outbox_id)
                 if (
@@ -419,7 +418,7 @@ class VectorIndexService:
             succeeded.append(action.entry_id)
 
         async def mark_failed(action: _PreparedOutbox, error: Exception) -> None:
-            """记录一条批量投递失败并按原有上限决定重试。"""
+            """记录投递失败，并按尝试次数上限决定是否重试。"""
             async with self._schema.database.session() as session:
                 outbox = await session.get(VectorOutboxModel, action.outbox_id)
                 if (
@@ -571,7 +570,7 @@ class VectorIndexService:
         retrieval_schema_version: str,
         flashback_threshold: float | None = None,
     ) -> str:
-        """仅为空 Canonical 库 bootstrap，否则执行完整安全重建。"""
+        """仅为没有生效索引和正式检索入口的数据库直接激活清单，否则完整重建。"""
         if not embedding_model_id.strip():
             raise ValueError("embedding_model_id 不能为空")
         if embedding_dimension <= 0:
@@ -660,13 +659,11 @@ class VectorIndexService:
         retrieval_schema_version: str,
         flashback_threshold: float | None = None,
     ) -> str:
-        """Return a matching ACTIVE manifest or safely rebuild a new one.
+        """返回参数匹配的 ACTIVE 索引清单，或重建并校验索引。
 
-        The check is performed in the same database used by the rest of the
-        service.  Existing ACTIVE indexes are never replaced by an empty
-        manifest: a mismatch or existing Canonical entry requires the full
-        BUILDING -> validate -> ACTIVE rebuild flow.  A partial unique index
-        on ACTIVE rows is the final guard against concurrent bootstrap callers.
+        已有生效索引参数不匹配，或已有正式检索入口时，需完成
+        BUILDING、校验、ACTIVE 流程，不能用空清单替代已有索引。
+        ACTIVE 状态的部分唯一索引约束并发初始化。
         """
         if not embedding_model_id.strip():
             raise ValueError("embedding_model_id 不能为空")
@@ -817,11 +814,7 @@ class VectorIndexService:
                 physical_entry_ids is None
                 or frozenset(physical_entry_ids) != frozenset(active_entry_ids)
             ):
-                # A BUILDING index is never made public unless its physical
-                # collection can be inspected and exactly matches Canonical.
-                # ChromaVectorSink returns None when the backend is unavailable;
-                # treating that as FAILED avoids activating an unverifiable
-                # derived index.
+                # 物理入口不可查询或与正式检索入口不一致时，不能激活派生索引。
                 manifest.status = VectorIndexStatus.FAILED
                 return
             active = list(
@@ -864,7 +857,7 @@ class VectorIndexService:
         """登记新清单并为全部 ACTIVE Memory 的入口排队 UPSERT。
 
         返回:
-            (新的 manifest index_id, 排队的入口数量) 元组。
+            新索引清单 ID 与排队入口数量的元组。
         """
         index_id = await self._create_building_manifest(
             embedding_model_id,
@@ -913,8 +906,7 @@ class VectorIndexService:
                 )
                 replay_ids = await self._requeue_building_drift(index_id)
             else:
-                # An initially empty pool can still observe a Canonical write
-                # before activation and must replay it into the BUILDING index.
+                # 初始入口为空时，也需将激活前的正式记忆变更投递到 BUILDING 索引。
                 replay_ids = await self._requeue_building_drift(index_id)
             if not replay_ids:
                 break
@@ -923,7 +915,7 @@ class VectorIndexService:
         return index_id, len(entries)
 
     async def _requeue_building_drift(self, index_id: str) -> list[str]:
-        """Replay Canonical changes observed while a rebuild is running."""
+        """为索引重建期间变化的正式检索入口补充投递项。"""
         now = datetime.now(UTC)
         replay_ids: list[str] = []
         async with self._schema.database.session() as session:

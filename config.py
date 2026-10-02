@@ -13,11 +13,11 @@ class EngramMemoryConfig(BaseConfig):
     """Engram Memory 连续记忆配置模型。"""
 
     name: ClassVar[str] = "config"
-    description: ClassVar[str] = "Engram Memory 连续记忆（经历编码、睡眠整理、人物印象与自然闪回）"
+    description: ClassVar[str] = "Engram Memory 正式记忆、人物印象与自然闪回"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
-        """过滤旧配置节后加载当前配置。"""
+        """过滤本地配置中的废弃字段，保留当前配置的严格校验。"""
         filtered: dict[str, Any] = dict(data)
         for section in (
             "retrieval",
@@ -26,6 +26,7 @@ class EngramMemoryConfig(BaseConfig):
             "flashback",
             "journal",
             "persona",
+            "internal_llm",
         ):
             filtered.pop(section, None)
 
@@ -34,6 +35,18 @@ class EngramMemoryConfig(BaseConfig):
             filtered_storage = dict(storage)
             filtered_storage.pop("metadata_db_path", None)
             filtered["storage"] = filtered_storage
+
+        vnext = filtered.get("vnext")
+        if isinstance(vnext, dict):
+            filtered_vnext = dict(vnext)
+            filtered_vnext.pop("candidate_encoder", None)
+            filtered_vnext.pop("sleep", None)
+            persona = filtered_vnext.get("persona")
+            if isinstance(persona, dict):
+                filtered_persona = dict(persona)
+                filtered_persona.pop("max_length", None)
+                filtered_vnext["persona"] = filtered_persona
+            filtered["vnext"] = filtered_vnext
 
         return super().from_dict(filtered)
 
@@ -61,22 +74,13 @@ class EngramMemoryConfig(BaseConfig):
         )
         vnext_db_path: str = Field(
             default="data/engram_memory/vnext.db",
-            description="vNext 规范认知数据库路径（与旧记忆数据库隔离）",
+            description="正式记忆数据库路径",
             label="vNext 数据库路径",
             input_type="text",
             tag="file",
         )
 
-    @config_section("internal_llm", title="内部 LLM 配置", tag="ai")
-    class InternalLLMSection(SectionBase):
-        """候选编码使用的模型任务配置。"""
-
-        task_name: str = Field(
-            default="tool_use", description="候选编码模型任务名（chat）"
-        )
-
     plugin: PluginSection = Field(default_factory=PluginSection)
     storage: StorageSection = Field(default_factory=StorageSection)
-    internal_llm: InternalLLMSection = Field(default_factory=InternalLLMSection)
 
     vnext: VNextConfig = Field(default_factory=VNextConfig)

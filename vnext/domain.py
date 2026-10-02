@@ -12,13 +12,8 @@ from .enums import (
     ParticipantKind,
     SubjectKind,
     RevisionChangeReason,
-    RelationType,
-    CandidateActionType,
-    CandidateStatus,
-    CandidateActionTargetRole,
-    SleepSessionStatus,
-    SleepTriggerType,
     MemoryEventType,
+    MemoryStatus,
 )
 
 
@@ -176,167 +171,6 @@ class ReviseMemoryInput:
 
 
 @dataclass(frozen=True, slots=True)
-class RelateMemoryInput:
-    """建立正式记忆关系的输入。"""
-
-    source_memory_id: str
-    target_memory_id: str
-    relation_type: RelationType
-    reason: str
-
-    def validate(self) -> None:
-        """验证关系目标、方向和原因。"""
-        if not self.source_memory_id or not self.target_memory_id:
-            raise ValueError("关系必须指定 source_memory_id 与 target_memory_id")
-        if self.source_memory_id == self.target_memory_id:
-            raise ValueError("不能建立 Memory 自环关系")
-        if not self.reason.strip():
-            raise ValueError("relation reason 不能为空")
-
-
-@dataclass(frozen=True, slots=True)
-class MergeMemoryInput:
-    """将多个正式记忆合并到已有 Canonical Memory 的输入。"""
-
-    source_memory_ids: tuple[str, ...]
-    canonical_memory_id: str | None = None
-    reason: str = ""
-    mode: str = "EXISTING_CANONICAL"
-    new_memory: CreateMemoryInput | None = None
-    evidence_ids: tuple[str, ...] = ()
-
-    def validate(self) -> None:
-        """验证合并至少包含一个不同于 Canonical 的来源。"""
-        if not self.source_memory_ids:
-            raise ValueError("合并必须指定 source_memory_ids")
-        if self.mode not in {"EXISTING_CANONICAL", "NEW_CANONICAL"}:
-            raise ValueError("Merge mode 无效")
-        if self.mode == "EXISTING_CANONICAL" and not self.canonical_memory_id:
-            raise ValueError("EXISTING_CANONICAL 必须指定 canonical_memory_id")
-        if self.mode == "NEW_CANONICAL" and self.new_memory is None:
-            raise ValueError("NEW_CANONICAL 必须指定 new_memory")
-        if self.canonical_memory_id is not None and self.canonical_memory_id in self.source_memory_ids:
-            raise ValueError("Canonical Memory 不能同时作为 Merge Source")
-        if len(set(self.source_memory_ids)) != len(self.source_memory_ids):
-            raise ValueError("source_memory_ids 不能重复")
-        if any(not isinstance(item, str) or not item.strip() for item in self.evidence_ids):
-            raise ValueError("evidence_ids 必须包含非空 ID")
-        if len(set(self.evidence_ids)) != len(self.evidence_ids):
-            raise ValueError("evidence_ids 不能重复")
-        if self.mode == "NEW_CANONICAL" and self.evidence_ids:
-            raise ValueError("NEW_CANONICAL 的 Evidence 必须通过 new_memory 指定")
-        if not self.reason.strip():
-            raise ValueError("merge reason 不能为空")
-        if self.new_memory is not None:
-            self.new_memory.validate()
-
-
-@dataclass(frozen=True, slots=True)
-class CandidateInput:
-    """经历编码器产生的候选素材输入。"""
-
-    rough_title: str
-    rough_content: str
-    observed_at: datetime
-    evidence: tuple[EvidenceInput, ...]
-    proposed_kind: MemoryKind | None = None
-    subject: SubjectInput | None = None
-    participants: tuple[ParticipantInput, ...] = ()
-
-    def validate(self) -> None:
-        """验证候选素材文本、来源和初步结构。"""
-        for field_name, value in {
-            "rough_title": self.rough_title,
-            "rough_content": self.rough_content,
-        }.items():
-            if not value.strip():
-                raise ValueError(f"{field_name} 不能为空")
-        if not self.evidence:
-            raise ValueError("Candidate 必须至少关联一份 Evidence")
-        if self.subject is not None:
-            self.subject.validate()
-        for participant in self.participants:
-            participant.validate()
-        for evidence in self.evidence:
-            evidence.validate()
-
-
-@dataclass(frozen=True, slots=True)
-class CandidateActionInput:
-    """候选素材处理动作输入。"""
-
-    candidate_id: str
-    sleep_session_id: str
-    action_type: CandidateActionType
-    note: str | None = None
-    result_revision_id: str | None = None
-    targets: tuple[tuple[str, CandidateActionTargetRole], ...] = ()
-    operation_key: str | None = None
-
-    def validate(self) -> None:
-        """验证候选动作的目标和说明。"""
-        if not self.candidate_id or not self.sleep_session_id:
-            raise ValueError("Candidate Action 必须指定候选和 Sleep Session")
-        if self.action_type is CandidateActionType.DEFER and not (self.note or "").strip():
-            raise ValueError("DEFER Action 必须说明暂缓原因")
-        if len(set(self.targets)) != len(self.targets):
-            raise ValueError("Candidate Action targets 不能重复")
-
-
-@dataclass(frozen=True, slots=True)
-class SleepSessionInput:
-    """创建睡眠整理审计会话的输入。"""
-
-    trigger_type: SleepTriggerType
-    model_id: str
-    prompt_version: str
-
-    def validate(self) -> None:
-        """验证模型与 Prompt 标识非空。"""
-        if not self.model_id.strip() or not self.prompt_version.strip():
-            raise ValueError("Sleep Session 必须指定 model_id 与 prompt_version")
-
-
-@dataclass(frozen=True, slots=True)
-class SleepSessionResult:
-    """睡眠会话创建或完成后的状态。"""
-
-    sleep_session_id: str
-    status: SleepSessionStatus
-    candidate_count: int
-
-
-@dataclass(frozen=True, slots=True)
-class CandidateStateTransition:
-    """候选状态转换结果。"""
-
-    previous_status: CandidateStatus
-    current_status: CandidateStatus
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryObservationEventInput:
-    """不改变认知内容的记忆观察事件输入。"""
-
-    memory_id: str
-    event_type: MemoryEventType
-    revision_id: str | None = None
-    payload: dict[str, object] | None = None
-
-    def validate(self) -> None:
-        """只允许读取、召回和闪回暴露事件。"""
-        if not self.memory_id:
-            raise ValueError("Memory Event 必须指定 memory_id")
-        allowed = {
-            MemoryEventType.READ,
-            MemoryEventType.RECALLED,
-            MemoryEventType.FLASHBACK_EXPOSED,
-        }
-        if self.event_type not in allowed:
-            raise ValueError("MemoryEventService 只允许记录观察事件")
-
-
-@dataclass(frozen=True, slots=True)
 class MemoryLifecycleInput:
     """正式记忆工程生命周期操作输入。"""
 
@@ -349,30 +183,6 @@ class MemoryLifecycleInput:
             raise ValueError("Memory Lifecycle 必须指定 memory_id")
         if not self.reason.strip():
             raise ValueError("lifecycle reason 不能为空")
-
-
-@dataclass(frozen=True, slots=True)
-class PersonaUpdateInput:
-    """由正式记忆派生人物印象的更新输入。"""
-
-    person_id: str
-    impression_text: str
-    reason: str
-    memory_ids: tuple[str, ...]
-    sleep_session_id: str | None = None
-
-    def validate(self) -> None:
-        """验证人物、正文、原因和审计记忆引用。"""
-        if not self.person_id:
-            raise ValueError("Persona Update 必须指定 person_id")
-        if not self.impression_text.strip():
-            raise ValueError("impression_text 不能为空")
-        if not self.reason.strip():
-            raise ValueError("persona update reason 不能为空")
-        if not self.memory_ids:
-            raise ValueError("Persona Update 必须引用 Formal Memory")
-        if len(set(self.memory_ids)) != len(self.memory_ids):
-            raise ValueError("Persona memory_ids 不能重复")
 
 
 @dataclass(frozen=True, slots=True)
@@ -459,3 +269,22 @@ class MemoryWriteResult:
     memory_id: str
     revision_id: str
     evidence_ids: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryChanged:
+    """已提交的记忆变化及其前后人物关联。"""
+
+    memory_id: str
+    change_type: MemoryEventType
+    before_person_ids: tuple[str, ...] = ()
+    after_person_ids: tuple[str, ...] = ()
+    before_revision_id: str | None = None
+    after_revision_id: str | None = None
+    before_status: MemoryStatus | None = None
+    after_status: MemoryStatus | None = None
+
+    @property
+    def affected_person_ids(self) -> tuple[str, ...]:
+        """返回变化前后关联人物的去重并集。"""
+        return tuple(dict.fromkeys((*self.before_person_ids, *self.after_person_ids)))

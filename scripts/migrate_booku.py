@@ -149,7 +149,7 @@ def capture_source(source: Path, directory: Path) -> dict[str, str]:
 def read_records(
     snapshot: Path,
 ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], int, dict[str, int]]:
-    """仅从本任务快照读取原始记录、完整标签和临时备忘数量。"""
+    """从迁移快照读取原始记录、完整标签和临时备忘数量。"""
     with closing(
         sqlite3.connect(f"{snapshot.as_uri()}?mode=ro", uri=True)
     ) as connection:
@@ -543,14 +543,14 @@ async def verify_records(
 
 
 def save_report(output: Path, report: dict[str, Any]) -> None:
-    """将本次阶段与校验信息写入任务独立目录。"""
+    """将迁移状态与校验信息写入独立输出目录。"""
     (output / "migration-report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 
 def log_step(output: Path, event: str, **values: Any) -> None:
-    """保存无私人正文的真实逐步运行记录并打印简要进度。"""
+    """保存不含私人正文的迁移日志并打印简要进度。"""
     record = {"time": datetime.now(UTC).isoformat(), "event": event, **values}
     with (output / "migration-events.jsonl").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")

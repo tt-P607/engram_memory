@@ -1,4 +1,4 @@
-"""Engram Memory vNext 固定领域枚举。"""
+"""正式记忆与历史候选、整理审计记录的持久化枚举。"""
 
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ class RelationType(StrEnum):
 
 
 class CandidateStatus(StrEnum):
-    """候选素材处理状态。"""
+    """历史候选素材的处理状态。"""
 
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
@@ -93,7 +93,7 @@ class CandidateStatus(StrEnum):
 
 
 class CandidateActionType(StrEnum):
-    """候选素材整理动作。"""
+    """历史候选素材的整理动作类型。"""
 
     CREATE_NEW = "CREATE_NEW"
     REINFORCE = "REINFORCE"
@@ -105,7 +105,7 @@ class CandidateActionType(StrEnum):
 
 
 class CandidateActionTargetRole(StrEnum):
-    """候选动作中的记忆角色。"""
+    """历史候选动作所关联记忆的角色。"""
 
     SOURCE = "SOURCE"
     TARGET = "TARGET"
@@ -114,7 +114,7 @@ class CandidateActionTargetRole(StrEnum):
 
 
 class SleepTriggerType(StrEnum):
-    """睡眠整理会话触发类型。"""
+    """历史候选整理会话的触发类型。"""
 
     DAILY = "DAILY"
     PRESSURE = "PRESSURE"
@@ -123,7 +123,7 @@ class SleepTriggerType(StrEnum):
 
 
 class SleepSessionStatus(StrEnum):
-    """睡眠整理会话状态。"""
+    """历史候选整理会话的运行状态。"""
 
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
@@ -132,7 +132,7 @@ class SleepSessionStatus(StrEnum):
 
 
 class SleepCandidateOutcome(StrEnum):
-    """睡眠会话处理候选素材的结果。"""
+    """历史整理会话处理候选素材的结果。"""
 
     RESOLVED = "RESOLVED"
     DEFERRED = "DEFERRED"
@@ -157,7 +157,7 @@ class MemoryEventType(StrEnum):
 
 
 class ActorType(StrEnum):
-    """领域动作执行主体。"""
+    """正式记忆及历史审计记录的动作执行主体。"""
 
     ACTOR = "ACTOR"
     SLEEP_AGENT = "SLEEP_AGENT"

@@ -249,7 +249,7 @@ def _migrate_v2_copy(
     before_hash: str,
     source_tables: set[str],
 ) -> dict[str, object]:
-    """复制 v2 数据库到 v3，只从副本移除插件自建人物印象表。"""
+    """复制 v2 数据库到 v3，保留全部数据表和历史人物印象归档。"""
     persona_table = "engram_vnext_person_persona"
     required_tables = {
         "engram_vnext_memory",
@@ -265,7 +265,7 @@ def _migrate_v2_copy(
     if report_path.exists() or report_path.is_symlink():
         raise ValueError("迁移报告已存在，拒绝覆盖")
 
-    preserved_tables = source_tables - {persona_table}
+    preserved_tables = source_tables
     source_counts = {
         table: int(
             old.execute(
@@ -279,7 +279,7 @@ def _migrate_v2_copy(
         for table in preserved_tables
         if table != "engram_vnext_schema_version"
     }
-    removed_persona_rows = int(
+    archived_persona_rows = int(
         old.execute(
             f"SELECT count(*) FROM {_quote_identifier(persona_table)}"
         ).fetchone()[0]
@@ -290,7 +290,6 @@ def _migrate_v2_copy(
         old.backup(new)
         new.execute("PRAGMA foreign_keys=OFF")
         with new:
-            new.execute(f'DROP TABLE "{persona_table}"')
             updated = new.execute(
                 "UPDATE engram_vnext_schema_version SET version=?, applied_at=? "
                 "WHERE schema_key=? AND version=2",
@@ -345,8 +344,8 @@ def _migrate_v2_copy(
     result: dict[str, object] = {
         "source_schema_version": 2,
         "schema_version": SCHEMA_VERSION,
-        "removed_table": persona_table,
-        "removed_persona_rows": removed_persona_rows,
+        "archived_table": persona_table,
+        "archived_persona_rows": archived_persona_rows,
         "preserved_table_rows": source_counts,
         "source_unchanged": source_unchanged,
         "foreign_key_check": "ok",
@@ -363,7 +362,7 @@ def migrate_copy(source: Path, target: Path) -> dict[str, object]:
     source, target = _validate_paths(source, target)
     before_hash = _hash(source)
     uri = f"file:{quote(source.as_posix(), safe='/:')}?mode=ro&immutable=1"
-    with sqlite3.connect(uri, uri=True) as old:
+    with closing(sqlite3.connect(uri, uri=True)) as old:
         old.row_factory = sqlite3.Row
         version = old.execute(
             "SELECT version FROM engram_vnext_schema_version WHERE schema_key=?",
@@ -419,7 +418,7 @@ def migrate_copy(source: Path, target: Path) -> dict[str, object]:
                 "SELECT entry_id FROM engram_vnext_memory_retrieval_entry WHERE entry_type IN ('ANCHOR','ANCHOR_TITLE')"
             )
         }
-        with sqlite3.connect(target) as new, archive.open("x", encoding="utf-8") as log:
+        with closing(sqlite3.connect(target)) as new, archive.open("x", encoding="utf-8") as log:
             new.execute("PRAGMA foreign_keys=OFF")
             new.execute("BEGIN IMMEDIATE")
             for table in source_tables:
@@ -428,7 +427,24 @@ def migrate_copy(source: Path, target: Path) -> dict[str, object]:
                     f"SELECT * FROM {_quote_identifier(table)}"
                 ).fetchall()
                 if table == "engram_vnext_person_persona":
-                    copied[table] = {"before": len(rows), "removed": len(rows)}
+                    table_sql = old.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                        (table,),
+                    ).fetchone()[0]
+                    new.execute(table_sql)
+                    if rows:
+                        placeholders = ",".join("?" for _ in rows[0])
+                        new.executemany(
+                            f"INSERT INTO {_quote_identifier(table)} VALUES ({placeholders})",
+                            (tuple(row) for row in rows),
+                        )
+                    for index in old.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='index' "
+                        "AND tbl_name=? AND sql IS NOT NULL",
+                        (table,),
+                    ):
+                        new.execute(index[0])
+                    copied[table] = {"before": len(rows), "after": len(rows)}
                     continue
                 if model_table is None:
                     for row in rows:
@@ -493,8 +509,6 @@ def migrate_copy(source: Path, target: Path) -> dict[str, object]:
                                 )
                     if table == "engram_vnext_evidence" and row.get("claim_basis") in SOURCE_NOTES:
                         row["note"] = "\n".join(filter(None, (row.get("note"), SOURCE_NOTES[row["claim_basis"]])))
-                    if table == "engram_vnext_candidate" and row.get("uncertainty_note"):
-                        row["rough_content"] += "\n\n旧候选的不确定说明：" + str(row["uncertainty_note"])
                     if table == "engram_vnext_memory_revision" and row.get("event_start_at"):
                         # 历史正文保持原文；移除的时间仍由来源说明与归档保存。
                         for evidence in old.execute(
@@ -507,10 +521,14 @@ def migrate_copy(source: Path, target: Path) -> dict[str, object]:
                             note += "；该时间沿用旧记录，未经本次迁移重新验证。"
                             # Evidence 后续复制时统一附加，避免更改不可变版本正文。
                             log.write(json.dumps({"table": table, "revision_id": row["revision_id"], "evidence_id": evidence[0], "event_note": note}, ensure_ascii=False) + "\n")
-                    for column in json_columns:
-                        if row.get(column) is not None:
-                            decoded = json.loads(row[column]) if isinstance(row[column], str) else row[column]
-                            row[column] = json.dumps(_simplify_json(decoded), ensure_ascii=False)
+                    if table not in {
+                        "engram_vnext_sleep_action_operation",
+                        "engram_vnext_sleep_action_plan",
+                    }:
+                        for column in json_columns:
+                            if row.get(column) is not None:
+                                decoded = json.loads(row[column]) if isinstance(row[column], str) else row[column]
+                                row[column] = json.dumps(_simplify_json(decoded), ensure_ascii=False)
                     new.execute(
                         f'INSERT INTO "{table}" ({names}) VALUES ({placeholders})',
                         tuple(row[column] for column in columns),

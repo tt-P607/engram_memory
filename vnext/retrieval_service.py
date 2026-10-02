@@ -100,7 +100,7 @@ class LexicalIndex:
 
 
 class VectorSearchBackend:
-    """向量检索后端的同步协议。"""
+    """向量检索后端接口。"""
 
     async def query(
         self,
@@ -128,10 +128,10 @@ class VectorSearchBackend:
 
 
 class EmbeddingVectorBackend(VectorSearchBackend):
-    """基于注入 embedder 的余弦相似度向量检索。"""
+    """基于注入的嵌入函数进行余弦相似度向量检索。"""
 
     def __init__(self, embedder: object) -> None:
-        """绑定同步或异步 embedder(texts) -> tuple[sequence[float], ...]。"""
+        """绑定接收文本序列、返回向量元组的同步或异步嵌入函数。"""
         self._embedder = embedder
 
     async def query(
@@ -390,7 +390,7 @@ class RetrievalService:
     async def _resolve_person_ids(
         self, person_ids: tuple[str, ...]
     ) -> tuple[str, ...]:
-        """Expand unique saved-snapshot aliases before structured person filtering."""
+        """结构化人物过滤前，展开已保存快照中的人物别名并去重。"""
         resolved: list[str] = []
         for person_id in person_ids:
             resolved.extend(await self._repository.resolve_person_aliases(person_id))

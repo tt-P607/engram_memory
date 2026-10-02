@@ -1,11 +1,8 @@
-"""Engram Memory vNext 闪回服务。
+"""回复生成前的正式记忆闪回服务。
 
-按 Engram vNext 检索契约实现回复前自动联想：
-复用统一 RetrievalService（不建第二套检索体系）、最近多轮拼接查询（不
-调用额外 LLM，INV-022）、延迟预算内未完成本轮放弃（INV-023）、Per-Index
-校准阈值（NULL 即关闭）、先相关性门槛后按检索分排序、同会话
-按轮数 Cooldown、最多 0-2 条注入、只读（
-仅记录 FLASHBACK_EXPOSED 观察事件）。
+使用混合检索与最近多轮对话召回记忆，在延迟预算内按索引校准阈值、
+语义相关性和会话冷却条件筛选，最多返回两条注入候选。
+闪回不修改正式记忆，按需记录 FLASHBACK_EXPOSED 暴露事件。
 """
 
 from __future__ import annotations
@@ -43,7 +40,7 @@ class FlashbackCandidate:
     matched_cue: str
 
     def to_prompt_block(self) -> str:
-        """构造注入主模型的自然联想文本（§130）。"""
+        """构造注入主模型的自然联想文本。"""
         return (
             "【自然联想到的过去】\n"
             "这是一段过去的记忆线索；人物和时间以正文为准，不能直接当作当前发言者的情况。\n"
@@ -70,12 +67,12 @@ class FlashbackService:
         """绑定检索服务与闪回参数。
 
         参数:
-            schema: vNext Schema。
-            retrieval: 统一混合检索服务（禁改认知属性）。
-            context_turns: 参与查询拼接的最近对话轮数（§123）。
-            latency_budget_ms: 延迟预算毫秒，超时本轮放弃（§125/INV-023）。
-            max_memories: 单轮注入上限（只允许 0-2，§128）。
-            cooldown_turns: 同记忆连续 N 轮不重复注入（§129）。
+            schema: 记忆数据库结构。
+            retrieval: 统一混合检索服务。
+            context_turns: 参与查询拼接的最近对话轮数。
+            latency_budget_ms: 延迟预算毫秒，超时本轮放弃。
+            max_memories: 单轮注入上限，只允许 0-2。
+            cooldown_turns: 同一记忆在会话中的冷却轮数。
         """
         if context_turns <= 0:
             raise ValueError("context_turns 必须大于 0")
@@ -94,7 +91,7 @@ class FlashbackService:
         self._stream_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def active_threshold(self) -> float | None:
-        """读取当前 ACTIVE 索引的校准阈值；无索引或 NULL 即关闭（§126）。"""
+        """读取当前 ACTIVE 索引的校准阈值；无索引或阈值时关闭闪回。"""
         async with self._schema.database.session() as session:
             manifest = (
                 await session.scalars(
@@ -230,7 +227,7 @@ class FlashbackService:
         参数:
             recent_turns: 最近多轮格式化文本（时间升序，可为空）。
             enabled: 运行配置 flashback.enabled 总开关。
-            stream_key: Cooldown 会话键。
+            stream_key: 会话冷却键。
 
         返回:
             注入候选元组；关闭、无阈值、无上下文或超预算时为空。
@@ -238,7 +235,7 @@ class FlashbackService:
         if not enabled or self._max_memories == 0:
             return ()
         async def run_within_budget() -> tuple[FlashbackCandidate, ...]:
-            """Execute threshold, cooldown and retrieval within one budget."""
+            """在同一耗时预算内读取阈值、冷却记录并完成检索。"""
             threshold = await self.active_threshold()
             if threshold is None:
                 return ()
@@ -255,7 +252,7 @@ class FlashbackService:
                 record_exposure,
             )
         async def locked_run() -> tuple[FlashbackCandidate, ...]:
-            """Serialize cooldown read and exposure write per conversation."""
+            """按会话串行读取冷却记录与写入暴露事件。"""
             async with self._stream_locks[stream_key]:
                 return await run_within_budget()
 
@@ -264,10 +261,10 @@ class FlashbackService:
                 locked_run(), timeout=self._latency_budget / 1000.0
             )
         except TimeoutError:
-            return ()  # INV-023：超预算放弃本轮，不拖慢回复
+            return ()  # 超出耗时预算时放弃本轮闪回。
 
     def build_query(self, recent_turns: tuple[str, ...]) -> str:
-        """拼接最近 N 轮为闪回查询文本（§123，不调用 LLM）。"""
+        """拼接最近多轮对话为闪回查询文本，不调用 LLM。"""
         selected = recent_turns[-self._context_turns :]
         return "\n".join(piece.strip() for piece in selected if piece and piece.strip())
 
@@ -280,7 +277,7 @@ class FlashbackService:
         turn_index: int | None = None,
         record_exposure: bool = True,
     ) -> tuple[FlashbackCandidate, ...]:
-        """相关性门槛过滤 → 按检索分排序 → 限量 → 记暴露事件。"""
+        """过滤相关性与冷却条件，排序限量，并按需记录暴露事件。"""
         results = await self._retrieval.search(
             RetrievalQuery(text=query_text, top_k=12), min_similarity=threshold
         )
@@ -323,7 +320,7 @@ class FlashbackService:
         stream_key: str,
         turn_index: int | None = None,
     ) -> None:
-        """Record exposure after candidates were actually accepted for injection."""
+        """为已接受注入的闪回候选记录暴露事件。"""
         await self._record_exposed_batch(
             memory_ids,
             stream_key,
@@ -338,12 +335,11 @@ class FlashbackService:
         now: datetime,
         turn_index: int | None,
     ) -> None:
-        """Atomically record all exposures selected for one flashback turn."""
+        """在同一事务中记录一轮闪回的全部暴露事件。"""
         if not memory_ids:
             return
         if len(memory_ids) == 1:
-            # Keep the narrow hook used by lightweight callers and tests;
-            # one exposure is already an atomic database transaction.
+            # 单条暴露通过独立入口写入，事务同样保持原子性。
             await self._record_exposed(memory_ids[0], stream_key, now, turn_index)
             return
         async with self._schema.database.session() as session:
@@ -367,7 +363,7 @@ class FlashbackService:
                 )
 
     async def _current_brief(self, scored: ScoredMemory) -> str:
-        """读取简短当前摘要作为注入正文（不塞完整历史，§130）。"""
+        """读取当前版本的简短摘要作为注入正文，不包含完整历史。"""
         from .repository import MemoryRepository
 
         repository = MemoryRepository(self._schema)
@@ -384,9 +380,9 @@ class FlashbackService:
         stream_key: str,
         turn_index: int | None = None,
     ) -> frozenset[str]:
-        """读取本会话最近 cooldown_turns 次暴露内的记忆 ID（§129）。
+        """读取本会话冷却范围内已暴露的记忆 ID。
 
-        Cooldown Key 为 memory_id + 当前会话（stream_key）；
+        冷却键为 memory_id 与当前会话 stream_key；
         cooldown_turns 为 0 表示不冷却。
         """
         if self._cooldown_turns == 0:
@@ -423,7 +419,7 @@ class FlashbackService:
         now: datetime,
         turn_index: int | None = None,
     ) -> None:
-        """记录 FLASHBACK_EXPOSED 观察事件（只读约束的最小例外，§131）。"""
+        """记录指定记忆在本会话中的 FLASHBACK_EXPOSED 暴露事件。"""
         async with self._schema.database.session() as session:
             session.add(
                 MemoryEventModel(

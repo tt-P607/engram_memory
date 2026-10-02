@@ -1,6 +1,6 @@
 """Engram vNext 与 Neo-MoFox 内部运行能力的集中适配层。
 
-现有插件公开 API 尚未覆盖任务、调度、向量数据库、全局 Reminder 删除
+现有插件公开 API 尚未覆盖任务、向量数据库、全局 Reminder 删除
 和按消息 ID 批量读取。本模块只在插件边缘封装这些只读或生命周期能力，
 不向领域层泄漏框架 Manager、数据库 Session 或可变 ORM 对象。
 """
@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import AsyncIterator, Coroutine, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,7 +20,6 @@ from src.core.models.sql_alchemy import ChatStreams, Messages, PersonInfo
 from src.core.prompt.system_reminder import get_system_reminder_store
 from src.kernel.concurrency import get_task_manager
 from src.kernel.db import get_db_session
-from src.kernel.scheduler import TriggerType, get_unified_scheduler
 from src.kernel.vector_db import get_vector_db_service
 
 
@@ -299,34 +298,6 @@ def cancel_managed_task(task_id: str) -> bool:
     return get_task_manager().cancel_task(task_id)
 
 
-async def create_time_schedule(
-    callback: Callable[..., Awaitable[Any]],
-    trigger_config: dict[str, Any],
-    *,
-    task_name: str,
-    is_recurring: bool = True,
-    force_overwrite: bool = True,
-) -> str:
-    """创建 Engram 命名空间下的时间调度并返回其句柄 ID。"""
-    if not task_name.startswith("engram_memory_"):
-        raise ValueError("Engram schedule 名称必须使用 engram_memory_ 前缀")
-    return await get_unified_scheduler().create_schedule(
-        callback=callback,
-        trigger_type=TriggerType.TIME,
-        trigger_config=dict(trigger_config),
-        is_recurring=is_recurring,
-        task_name=task_name,
-        force_overwrite=force_overwrite,
-    )
-
-
-async def remove_owned_schedule(schedule_id: str) -> bool:
-    """按插件保存的句柄精确移除一个 Engram 调度。"""
-    if not schedule_id.strip():
-        return False
-    return await get_unified_scheduler().remove_schedule(schedule_id)
-
-
 def delete_owned_reminder(bucket: str, name: str) -> bool:
     """只删除 Engram 自己命名空间下的一条全局 Reminder。"""
     if not name.startswith("engram_memory_"):
@@ -555,7 +526,6 @@ __all__ = [
     "VectorDatabase",
     "cancel_managed_task",
     "create_managed_task",
-    "create_time_schedule",
     "delete_owned_reminder",
     "get_managed_task",
     "get_vector_database",
@@ -564,5 +534,4 @@ __all__ = [
     "read_migration_message_candidates",
     "read_migration_person_candidates",
     "read_migration_stream_candidates",
-    "remove_owned_schedule",
 ]

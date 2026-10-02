@@ -1,4 +1,4 @@
-"""Engram Memory vNext 规范数据与派生检索数据 ORM 模型。"""
+"""正式记忆、来源证据、派生检索及历史候选与整理审计的 ORM 模型。"""
 
 from __future__ import annotations
 
@@ -213,7 +213,7 @@ class MemoryRevisionParticipantModel(Base):
 
 
 class EvidenceModel(Base):
-    """正式认知或候选素材的来源证据。"""
+    """正式记忆与历史候选归档共享的来源证据。"""
 
     __tablename__ = "engram_vnext_evidence"
 
@@ -272,7 +272,7 @@ class RevisionEvidenceModel(Base):
 
 
 class MemoryRelationModel(Base):
-    """具有固定方向语义且可撤销的记忆关系。"""
+    """历史记忆关系、合并去向及迁移关联的审计结构。"""
 
     __tablename__ = "engram_vnext_memory_relation"
 
@@ -326,7 +326,7 @@ class MemoryRelationModel(Base):
 
 
 class CandidateModel(Base):
-    """尚未成为正式记忆的全局候选素材。"""
+    """历史候选素材的归档结构。"""
 
     __tablename__ = "engram_vnext_candidate"
 
@@ -350,7 +350,7 @@ class CandidateModel(Base):
 
 
 class CandidateEvidenceModel(Base):
-    """候选素材与证据关系。"""
+    """历史候选素材与来源证据的归档关联。"""
 
     __tablename__ = "engram_vnext_candidate_evidence"
 
@@ -363,7 +363,7 @@ class CandidateEvidenceModel(Base):
 
 
 class CandidateSubjectModel(Base):
-    """候选素材的初步主体判断。"""
+    """历史候选素材主体判断的归档结构。"""
 
     __tablename__ = "engram_vnext_candidate_subject"
 
@@ -386,7 +386,7 @@ class CandidateSubjectModel(Base):
 
 
 class CandidateParticipantModel(Base):
-    """候选素材的初步参与者判断。"""
+    """历史候选素材参与者判断的归档结构。"""
 
     __tablename__ = "engram_vnext_candidate_participant"
 
@@ -410,7 +410,7 @@ class CandidateParticipantModel(Base):
 
 
 class CandidateEncoderCursorModel(Base):
-    """按聊天流保存经历编码器复合游标。"""
+    """历史经历编码位置的按流归档结构。"""
 
     __tablename__ = "engram_vnext_candidate_encoder_cursor"
 
@@ -421,7 +421,7 @@ class CandidateEncoderCursorModel(Base):
 
 
 class SleepSessionModel(Base):
-    """每次睡眠整理运行的审计会话。"""
+    """历史候选整理会话的审计归档。"""
 
     __tablename__ = "engram_vnext_sleep_session"
 
@@ -446,7 +446,7 @@ class SleepSessionModel(Base):
 
 
 class CandidateActionModel(Base):
-    """睡眠整理对候选素材产生的追加式动作。"""
+    """历史候选素材处理动作的追加式审计归档。"""
 
     __tablename__ = "engram_vnext_candidate_action"
 
@@ -470,7 +470,7 @@ class CandidateActionModel(Base):
 
 
 class SleepActionOperationModel(Base):
-    """睡眠动作的不可变意图与可恢复执行状态。"""
+    """历史候选处理动作的意图、执行状态与结果归档。"""
 
     __tablename__ = "engram_vnext_sleep_action_operation"
 
@@ -507,7 +507,7 @@ class SleepActionOperationModel(Base):
 
 
 class SleepActionPlanModel(Base):
-    """候选动作计划及其恢复游标。"""
+    """历史候选处理计划及执行进度的归档结构。"""
 
     __tablename__ = "engram_vnext_sleep_action_plan"
 
@@ -547,7 +547,7 @@ class SleepActionPlanModel(Base):
 
 
 class CandidateActionTargetModel(Base):
-    """候选整理动作涉及的正式记忆。"""
+    """历史候选处理动作所涉及正式记忆的归档关联。"""
 
     __tablename__ = "engram_vnext_candidate_action_target"
 
@@ -563,7 +563,7 @@ class CandidateActionTargetModel(Base):
 
 
 class SleepSessionCandidateModel(Base):
-    """睡眠会话对候选素材的认领与释放记录。"""
+    """历史整理会话对候选素材的认领、释放与结果归档。"""
 
     __tablename__ = "engram_vnext_sleep_session_candidate"
 
@@ -684,7 +684,10 @@ class MemoryRetrievalEntryModel(Base):
 
 
 class VectorOutboxModel(Base):
-    """Canonical Commit 后更新向量索引的事务 Outbox。"""
+    """正式记忆事务提交后更新派生向量索引的工作项。
+
+    index_id 为空时，工作器将其绑定至唯一 ACTIVE 索引并锁定认领状态。
+    """
 
     __tablename__ = "engram_vnext_vector_outbox"
 
@@ -698,9 +701,6 @@ class VectorOutboxModel(Base):
     )
     content_hash: Mapped[str] = mapped_column(Text, nullable=False)
     embedding_model_id: Mapped[str] = mapped_column(Text, nullable=False)
-    # The target index is nullable for rows created before the first ACTIVE
-    # manifest is bootstrapped.  Workers resolve those rows to the sole
-    # current ACTIVE manifest and fence the claim before touching the sink.
     index_id: Mapped[str | None] = mapped_column(String(36))
     status: Mapped[OutboxStatus] = mapped_column(
         _enum(OutboxStatus, "engram_vnext_outbox_status"), nullable=False

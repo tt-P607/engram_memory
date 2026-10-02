@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -15,6 +16,7 @@ from .domain import (
     CreateMemoryInput,
     EvidenceInput,
     MemoryLifecycleInput,
+    MemoryChanged,
     MemoryWriteResult,
     ReinforceMemoryInput,
     ReviseMemoryInput,
@@ -62,18 +64,56 @@ def _content_hash(text: str) -> str:
 class MemoryService:
     """保证正式记忆写入的事务边界与领域不变量。"""
 
-    def __init__(self, schema: VNextSchema, embedding_model_id: str) -> None:
-        """绑定 Canonical Schema 与当前向量模型标识。"""
+    def __init__(
+        self,
+        schema: VNextSchema,
+        embedding_model_id: str,
+        on_memory_changed: Callable[[MemoryChanged], Awaitable[None]] | None = None,
+    ) -> None:
+        """绑定正式记忆数据库、向量模型与提交后通知。"""
         if not embedding_model_id.strip():
             raise ValueError("embedding_model_id 不能为空")
         self._schema = schema
         self._embedding_model_id = embedding_model_id
         self._evidence_service = EvidenceService(schema)
+        self._on_memory_changed = on_memory_changed
+
+    async def _notify_change(self, change: MemoryChanged) -> None:
+        """在数据库提交后通知记忆变化的订阅者。"""
+        if self._on_memory_changed is not None:
+            await self._on_memory_changed(change)
+
+    @staticmethod
+    def _input_person_ids(data: CreateMemoryInput | ReviseMemoryInput) -> tuple[str, ...]:
+        """读取写入数据中的主要人物和次要人物。"""
+        return tuple(dict.fromkeys(
+            person_id for person_id in (
+                data.subject.person_id,
+                *(participant.person_id for participant in data.participants),
+            ) if person_id
+        ))
+
+    @staticmethod
+    async def _revision_person_ids(
+        session: AsyncSession, revision_id: str,
+    ) -> tuple[str, ...]:
+        """读取指定版本的人物关联，不依赖记忆当前状态。"""
+        subject = await session.get(MemoryRevisionSubjectModel, revision_id)
+        participants = await session.scalars(
+            select(MemoryRevisionParticipantModel.person_id).where(
+                MemoryRevisionParticipantModel.revision_id == revision_id,
+            )
+        )
+        return tuple(dict.fromkeys(
+            person_id for person_id in (
+                subject.person_id if subject is not None else None, *participants.all(),
+            ) if person_id
+        ))
 
     async def prepare_evidence(
         self, evidence: tuple[EvidenceInput, ...]
     ) -> tuple[EvidenceInput, ...]:
-        """在开启 Canonical Transaction 前补齐新来源快照。"""
+        """在写事务开始前读取缺少的来源快照。"""
         return await self._evidence_service.prepare_evidence(evidence)
 
     @staticmethod
@@ -119,48 +159,12 @@ class MemoryService:
             operation.result_json = result
             operation.completed_at = datetime.now(UTC)
 
-    async def _find_operation_event(
-        self,
-        session: AsyncSession,
-        event_type: MemoryEventType,
-        operation_key: str | None,
-    ) -> MemoryEventModel | None:
-        """按稳定动作 key 查找已经提交的领域事件。"""
-        if operation_key is None:
-            return None
-        events = tuple(
-            (
-                await session.scalars(
-                    select(MemoryEventModel).where(MemoryEventModel.event_type == event_type)
-                )
-            ).all()
-        )
-        return next(
-            (
-                event
-                for event in events
-                if isinstance(event.payload_json, dict)
-                and event.payload_json.get("operation_key") == operation_key
-            ),
-            None,
-        )
-
-    @staticmethod
-    def _event_result(event: MemoryEventModel) -> MemoryWriteResult:
-        """从幂等领域事件重建正式写入结果。"""
-        payload = event.payload_json or {}
-        return MemoryWriteResult(
-            memory_id=event.memory_id,
-            revision_id=event.revision_id or str(payload["revision_id"]),
-            evidence_ids=tuple(str(item) for item in payload.get("evidence_ids", ())),
-        )
-
     async def create_memory(
         self,
         data: CreateMemoryInput,
         context: WriteContext,
     ) -> MemoryWriteResult:
-        """在一个 Canonical Transaction 中创建完整正式记忆。"""
+        """在同一事务中创建正文、人物、来源和检索入口。"""
         data.validate()
         data = replace(data, evidence=await self.prepare_evidence(data.evidence))
         now = datetime.now(UTC)
@@ -261,120 +265,13 @@ class MemoryService:
                 },
             )
 
-        return MemoryWriteResult(
+        await self._notify_change(MemoryChanged(
             memory_id=memory_id,
-            revision_id=revision_id,
-            evidence_ids=evidence_ids,
-        )
-
-    async def create_memory_in_session(
-        self,
-        session: AsyncSession,
-        data: CreateMemoryInput,
-        context: WriteContext,
-    ) -> MemoryWriteResult:
-        """在调用方 Canonical Transaction 中创建完整正式记忆。
-
-        该入口仅供需要把 Memory 创建与其他领域写入合并为同一事务的领域服务使用。
-        """
-        data.validate()
-        now = datetime.now(UTC)
-        memory_id = _new_id()
-        revision_id = _new_id()
-        memory = MemoryModel(
-            memory_id=memory_id,
-            status=MemoryStatus.ACTIVE,
-            current_revision_id=revision_id,
-            created_at=now,
-            created_by_type=context.actor_type,
-            last_experienced_at=data.observed_at,
-            updated_at=now,
-        )
-        revision = MemoryRevisionModel(
-            revision_id=revision_id,
-            memory_id=memory_id,
-            revision_no=1,
-            parent_revision_id=None,
-            title=data.title,
-            content=data.content,
-            memory_kind=data.memory_kind,
-            observed_at=data.observed_at,
-            change_reason=RevisionChangeReason.INITIAL,
-            created_at=now,
-            created_by_type=context.actor_type,
-            created_by_ref=context.actor_ref,
-        )
-        subject = MemoryRevisionSubjectModel(
-            revision_id=revision_id,
-            subject_kind=data.subject.subject_kind,
-            person_id=data.subject.person_id,
-            subject_key=data.subject.subject_key,
-            subject_label=data.subject.subject_label,
-        )
-        await session.execute(text("PRAGMA defer_foreign_keys = ON"))
-        existing_result = await self._claim_domain_operation(
-            session, context.operation_key, "CREATE"
-        )
-        if existing_result is not None:
-            return MemoryWriteResult(
-                memory_id=str(existing_result["memory_id"]),
-                revision_id=str(existing_result["revision_id"]),
-                evidence_ids=tuple(
-                    str(item) for item in existing_result.get("evidence_ids", ())
-                ),
-            )
-        session.add_all([memory, revision, subject])
-        for participant in data.participants:
-            session.add(
-                MemoryRevisionParticipantModel(
-                    participant_id=_new_id(),
-                    revision_id=revision_id,
-                    participant_kind=participant.participant_kind,
-                    person_id=participant.person_id,
-                    label=participant.label,
-                )
-            )
-        evidence_ids, _ = await self._attach_evidence(
-            session=session,
-            revision_id=revision_id,
-            evidence=data.evidence,
-            existing_evidence_ids=data.evidence_ids,
-            now=now,
-        )
-        self._add_retrieval_entry(
-            session=session,
-            memory_id=memory_id,
-            revision_id=revision_id,
-            entry_type=RetrievalEntryType.CURRENT_REVISION,
-            text=f"{data.title}\n{data.content}",
-            created_at=now,
-        )
-        session.add(
-            MemoryEventModel(
-                event_id=_new_id(),
-                memory_id=memory_id,
-                revision_id=revision_id,
-                event_type=MemoryEventType.CREATED,
-                actor_type=context.actor_type,
-                actor_ref=context.actor_ref,
-                stream_id=context.stream_id,
-                occurred_at=now,
-                payload_json={
-                    "evidence_ids": list(evidence_ids),
-                    "revision_id": revision_id,
-                    "operation_key": context.operation_key,
-                },
-            )
-        )
-        await self._complete_domain_operation(
-            session,
-            context.operation_key,
-            {
-                "memory_id": memory_id,
-                "revision_id": revision_id,
-                "evidence_ids": list(evidence_ids),
-            },
-        )
+            change_type=MemoryEventType.CREATED,
+            after_person_ids=self._input_person_ids(data),
+            after_revision_id=revision_id,
+            after_status=MemoryStatus.ACTIVE,
+        ))
         return MemoryWriteResult(
             memory_id=memory_id,
             revision_id=revision_id,
@@ -405,6 +302,7 @@ class MemoryService:
                 )
             memory = await self._get_writable_memory(session, data.memory_id)
             self._validate_current_revision(memory, data.based_on_revision_id)
+            person_ids = await self._revision_person_ids(session, memory.current_revision_id)
             claim_result = await session.execute(
                 update(MemoryModel)
                 .where(
@@ -453,6 +351,14 @@ class MemoryService:
                     "evidence_ids": list(evidence_ids),
                 },
             )
+        await self._notify_change(MemoryChanged(
+            memory_id=data.memory_id,
+            change_type=MemoryEventType.REINFORCED,
+            before_person_ids=person_ids, after_person_ids=person_ids,
+            before_revision_id=data.based_on_revision_id,
+            after_revision_id=data.based_on_revision_id,
+            before_status=MemoryStatus.ACTIVE, after_status=MemoryStatus.ACTIVE,
+        ))
         return MemoryWriteResult(
             memory_id=data.memory_id,
             revision_id=data.based_on_revision_id,
@@ -516,6 +422,9 @@ class MemoryService:
                 raise ValueError("当前 Revision 不存在")
             if current_revision.memory_id != data.memory_id:
                 raise ValueError("当前 Revision 不属于目标 Memory")
+            before_person_ids = await self._revision_person_ids(
+                session, current_revision.revision_id,
+            )
             session.add(
                 MemoryRevisionModel(
                     revision_id=revision_id,
@@ -605,6 +514,15 @@ class MemoryService:
                     "evidence_ids": list(evidence_ids),
                 },
             )
+        await self._notify_change(MemoryChanged(
+            memory_id=data.memory_id,
+            change_type=MemoryEventType.REVISED,
+            before_person_ids=before_person_ids,
+            after_person_ids=self._input_person_ids(data),
+            before_revision_id=data.based_on_revision_id,
+            after_revision_id=revision_id,
+            before_status=MemoryStatus.ACTIVE, after_status=MemoryStatus.ACTIVE,
+        ))
         return MemoryWriteResult(
             memory_id=data.memory_id,
             revision_id=revision_id,
@@ -615,18 +533,31 @@ class MemoryService:
         self,
         data: MemoryLifecycleInput,
         context: WriteContext,
+        *,
+        evidence: tuple[EvidenceInput, ...] = (),
     ) -> None:
-        """将正式记忆标记为工程作废并排队删除派生向量。"""
+        """保留作废依据与历史，并排队删除派生向量。"""
         data.validate()
-        self._require_admin(context)
+        self._require_lifecycle_writer(context)
+        evidence = await self.prepare_evidence(evidence)
         now = datetime.now(UTC)
         async with self._schema.database.session() as session:
+            existing = await self._claim_domain_operation(session, context.operation_key, "TOMBSTONE")
+            if existing is not None:
+                return
             memory = await session.get(MemoryModel, data.memory_id)
             if memory is None:
                 raise ValueError("Memory 不存在")
             if memory.status is MemoryStatus.TOMBSTONED:
                 raise ValueError("Memory 已经是 TOMBSTONED")
             previous_status = memory.status
+            person_ids = await self._revision_person_ids(session, memory.current_revision_id)
+            revision_id = memory.current_revision_id
+            evidence_ids: tuple[str, ...] = ()
+            if evidence:
+                evidence_ids, _ = await self._attach_evidence(
+                    session, revision_id, evidence, (), now,
+                )
             memory.status = MemoryStatus.TOMBSTONED
             memory.updated_at = now
             entries = list(
@@ -659,9 +590,21 @@ class MemoryService:
                     payload_json={
                         "previous_status": previous_status.value,
                         "reason": data.reason,
+                        "evidence_ids": list(evidence_ids),
+                        "operation_key": context.operation_key,
                     },
                 )
             )
+            await self._complete_domain_operation(session, context.operation_key, {
+                "memory_id": memory.memory_id, "revision_id": revision_id,
+            })
+
+        await self._notify_change(MemoryChanged(
+            memory_id=data.memory_id, change_type=MemoryEventType.TOMBSTONED,
+            before_person_ids=person_ids, before_revision_id=revision_id,
+            after_revision_id=revision_id,
+            before_status=previous_status, after_status=MemoryStatus.TOMBSTONED,
+        ))
 
     async def restore_memory(
         self,
@@ -670,7 +613,7 @@ class MemoryService:
     ) -> None:
         """恢复工程作废记忆并排队重建派生向量。"""
         data.validate()
-        self._require_admin(context)
+        self._require_lifecycle_writer(context)
         now = datetime.now(UTC)
         async with self._schema.database.session() as session:
             memory = await session.get(MemoryModel, data.memory_id)
@@ -694,6 +637,8 @@ class MemoryService:
                 if raw_status in {status.value for status in MemoryStatus}:
                     previous_status = MemoryStatus(raw_status)
             memory.status = previous_status
+            person_ids = await self._revision_person_ids(session, memory.current_revision_id)
+            revision_id = memory.current_revision_id
             memory.updated_at = now
             entries = list(
                 (
@@ -726,11 +671,18 @@ class MemoryService:
                 )
             )
 
+        await self._notify_change(MemoryChanged(
+            memory_id=data.memory_id, change_type=MemoryEventType.RESTORED,
+            after_person_ids=person_ids, before_revision_id=revision_id,
+            after_revision_id=revision_id,
+            before_status=MemoryStatus.TOMBSTONED, after_status=previous_status,
+        ))
+
     @staticmethod
-    def _require_admin(context: WriteContext) -> None:
-        """确认生命周期操作由管理员执行。"""
-        if context.actor_type is not ActorType.ADMIN:
-            raise PermissionError("只有 ADMIN 可以执行 Memory 生命周期操作")
+    def _require_lifecycle_writer(context: WriteContext) -> None:
+        """限制记忆作废和恢复的执行身份。"""
+        if context.actor_type not in {ActorType.ACTOR, ActorType.ADMIN}:
+            raise PermissionError("只有 ACTOR 或 ADMIN 可以执行 Memory 生命周期操作")
 
     async def _get_writable_memory(
         self,
@@ -848,7 +800,7 @@ class MemoryService:
         text: str,
         created_at: datetime,
     ) -> None:
-        """在 Canonical Transaction 中写入检索入口及待处理 Outbox。"""
+        """在记忆事务中写入检索入口及待投递向量任务。"""
         entry_id = _new_id()
         content_hash = _content_hash(text)
         session.add(

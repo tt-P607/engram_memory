@@ -1,17 +1,13 @@
-"""Engram Memory vNext 领域与持久化实现。"""
+"""正式记忆、人物印象与检索的领域实现。"""
 
 from .enums import (
     ActorType,
-    CandidateActionType,
-    CandidateStatus,
     MemoryKind,
     MemoryStatus,
 )
 
 __all__ = [
     "ActorType",
-    "CandidateActionType",
-    "CandidateStatus",
     "MemoryKind",
     "MemoryStatus",
 ]
