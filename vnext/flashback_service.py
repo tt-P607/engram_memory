@@ -40,14 +40,15 @@ class FlashbackCandidate:
     matched_cue: str
 
     def to_prompt_block(self) -> str:
-        """构造注入主模型的自然联想文本。"""
+        """构造当前聊天突然唤起的记忆闪回文本。"""
         return (
-            "【自然联想到的过去】\n"
-            "这是一段过去的记忆线索；人物和时间以正文为准，不能直接当作当前发言者的情况。\n"
+            "【记忆闪回】\n"
+            "当前的聊天让你突然想起了这段记忆，供你理解当前语境参考，绝不要原样复述或机械背诵细节。\n"
+            "若与当下对话无关就不要提及；若相关，请结合此时此刻的情境用自然、契合当下的方式表达。\n"
             f"memory_id: {self.memory_id}\n"
             f"标题: {self.title}\n"
-            f"你现在记得: {self.current_brief}\n"
-            f"联想到的原因: 当前语境可能与「{self.matched_cue}」有关"
+            f"突然想起的内容: {self.current_brief}\n"
+            f"触发片段: {self.matched_cue}"
         )
 
 

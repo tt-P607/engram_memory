@@ -189,7 +189,7 @@ _PERSON_FIELDS: dict[str, object] = {
                              "description": "其他相关人物的准确 ID；不能重复主要人物。"},
     "source_message_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1,
                            "uniqueItems": True, "description": "支持正文的当前聊天消息 ID，包括必要的转述或指代上下文。"},
-    "content": {"type": "string", "description": "自然描述值得记住的内容，区分亲历、转述、计划与不确定判断。"},
+    "content": {"type": "string", "description": "自然记清值得记住的事情与聊天背景，区分亲历、转述、计划与不确定判断；不把私下透露写成大家已经知道的事实。"},
     "memory_kind": {"type": "string", "enum": [kind.value for kind in MemoryKind]},
 }
 
@@ -198,7 +198,10 @@ class VNextMemorySearchTool(BaseTool):
     """查询可按人物、类型和时间筛选的正式记忆。"""
 
     name = "memory_search"
-    description = "搜索正式记忆；同一人物或经历已有记忆时优先修订，不重复创建。"
+    description = (
+        "搜索正式记忆，帮你想起相关的人和事；结果是线索目录，可用 memory_read 核对，不必在回复里复述。"
+        "同一人物或经历已有记忆时优先修订，不重复创建。"
+    )
 
     async def execute(
         self, query: str, person_ids: list[str] | None = None,
@@ -219,7 +222,10 @@ class VNextMemoryReadTool(BaseTool):
     """读取正式记忆、版本历史及来源。"""
 
     name = "memory_read"
-    description = "通过 Memory ID 读取当前记忆、history 历史版本或 full 来源与审计记录。"
+    description = (
+        "通过 Memory ID 回读 current 正文、history 历史版本或 full 来源与审计，帮你核对记得的事情。"
+        "回应时仍顾及当时是谁向你说起、现在有哪些人在听，不因读到了就替对方向别人讲出来。"
+    )
 
     async def execute(self, memory_id: str, view: str = "current") -> tuple[bool, str | dict[str, object]]:
         """返回 current、history 或 full 记忆视图。"""
@@ -230,7 +236,7 @@ class VNextMemoryWriteAction(BaseAction):
     """保存有来源和明确人物关联的正式记忆。"""
 
     name = "memory_write"
-    description = "搜索去重后，保存值得长期记住的自然正文、主次人物与当前聊天来源。"
+    description = "搜索去重后，记下值得长期保留的自然正文、主次人物与当前聊天来源，供以后回想；保存不是代对方公开。"
 
     @classmethod
     def to_schema(cls) -> dict[str, Any]:
@@ -334,7 +340,10 @@ class VNextPersonLookupTool(BaseTool):
 
     name = "person_lookup"
     description = (
-        "按人物 ID 查询核心信息、当前印象与近期记忆；ID 不能用昵称代替。"
+        "按人物 ID 想起这个人的核心信息、当前印象与近期记忆，帮助你接着相处，不是要把他的情况介绍给旁人。"
+        "群聊中跟某个人开始聊天或有人新参与时，先调用本工具读取他的当前印象，再开始回应。"
+        "同一段对话已读过的印象可以继续使用；私聊直接使用自动注入的印象，不要求聊天前再调用本工具。"
+        "ID 不能用昵称代替。"
         "view=current 读当前，history 列出历史目录，revision 配合 revision_no 读指定历史正文。"
         "历史只是当时的主观认识，不是当前事实或正式记忆依据。"
     )

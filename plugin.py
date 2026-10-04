@@ -6,11 +6,14 @@ from src.app.plugin_system.api import log_api, prompt_api, router_api
 from src.app.plugin_system.base import BasePlugin, register_plugin
 
 from .config import EngramMemoryConfig
-from .router.memory_admin_router import VNextMemoryAdminRouter
+from .diary.events import ChatDiaryEventHandler
 from .prompts import MEMORY_GUIDE_REMINDER
+from .router.memory_admin_router import VNextMemoryAdminRouter
 from .vnext.framework_bridge import (
     delete_owned_reminder,
 )
+from .vnext.persona_injection import REMINDER_NAME as PERSONA_REMINDER_NAME
+from .vnext.persona_injection import VNextPrivatePersonaEventHandler
 from .vnext.runtime_components import (
     VNextDoctorRouter,
     VNextFlashbackEventHandler,
@@ -24,7 +27,6 @@ from .vnext.runtime_components import (
     VNextPersonLookupTool,
 )
 from .vnext.runtime_owner import VNextRuntimeOwner
-
 
 logger = log_api.get_logger("engram_memory.plugin")
 
@@ -46,6 +48,7 @@ class EngramMemoryPlugin(BasePlugin):
         self.runtime_owner: VNextRuntimeOwner | None = None
         self._unloading = False
         self._flashback_reminder_streams: dict[str, set[str]] = {}
+        self._persona_reminder_streams: set[str] = set()
 
     def get_components(self) -> list[type]:
         """返回正式记忆查询工具、写操作、事件处理器、服务与管理路由。"""
@@ -61,6 +64,8 @@ class EngramMemoryPlugin(BasePlugin):
             VNextMemoryService,
             VNextMemoryChangedEventHandler,
             VNextFlashbackEventHandler,
+            VNextPrivatePersonaEventHandler,
+            ChatDiaryEventHandler,
             VNextDoctorRouter,
             VNextMemoryAdminRouter,
         ]
@@ -103,7 +108,7 @@ class EngramMemoryPlugin(BasePlugin):
             logger.debug("Engram Memory 引导语未注册")
 
     async def on_plugin_unloaded(self) -> None:
-        """停止共享运行资源并移除聊天流闪回和全局记忆引导语。"""
+        """停止共享资源并移除流闪回、私聊印象与全局记忆引导语。"""
         self._unloading = True
         for stream_id, names in self._flashback_reminder_streams.items():
             for name in names:
@@ -112,6 +117,12 @@ class EngramMemoryPlugin(BasePlugin):
                 except Exception:  # noqa: BLE001
                     logger.debug("移除流闪回 reminder 失败")
         self._flashback_reminder_streams.clear()
+        for stream_id in self._persona_reminder_streams:
+            try:
+                prompt_api.delete_stream_reminder(stream_id, "actor", PERSONA_REMINDER_NAME)
+            except Exception as error:  # noqa: BLE001
+                logger.warning(f"移除私聊人物印象 reminder 失败: {error}")
+        self._persona_reminder_streams.clear()
         try:
             if self.runtime_owner is not None:
                 try:

@@ -20,6 +20,8 @@
     { "component_type": "service", "component_name": "memory_service", "dependencies": [] },
     { "component_type": "event_handler", "component_name": "memory_changed", "dependencies": [] },
     { "component_type": "event_handler", "component_name": "vnext_flashback_injector", "dependencies": [] },
+    { "component_type": "event_handler", "component_name": "private_persona", "dependencies": [] },
+    { "component_type": "event_handler", "component_name": "chat_diary", "dependencies": [] },
     { "component_type": "router", "component_name": "vnext_doctor", "dependencies": [] },
     { "component_type": "router", "component_name": "memory_admin", "dependencies": [] }
   ],
@@ -34,6 +36,6 @@
     "storage_api": "1.0.0",
     "log_api": "1.0.0"
   },
-  "python_dependencies": [],
+  "python_dependencies": ["tzdata"],
   "dependencies_required": true
 }

@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from src.app.plugin_system.api import event_api, log_api, stream_api
 
+from ..diary.runtime import DiaryRuntime
 from .doctor_service import DoctorService
 from .domain import MemoryChanged
 from .enums import VectorIndexStatus
@@ -38,7 +39,6 @@ from .runtime import (
 from .schema import VNextSchema
 from .tool_service import VNextToolService
 from .vector_service import VectorIndexService
-
 
 logger = log_api.get_logger(
     "engram_memory.vnext.runtime_owner", display="Engram 记忆", color=log_api.COLOR.CYAN
@@ -127,6 +127,7 @@ class VNextRuntimeOwner:
         if not isinstance(plugin.config, EngramMemoryConfig):
             raise TypeError("Engram Runtime 必须使用已加载的插件配置")
         self.config: EngramMemoryConfig = plugin.config
+        self.diary = DiaryRuntime(self.config.diary)
         config = self.config
         vnext = config.vnext
         self.schema = VNextSchema(config.storage.vnext_db_path)
@@ -217,6 +218,7 @@ class VNextRuntimeOwner:
             self._worker_started = True
             self.vector_worker.start()
             self._initialized = True
+            await self.diary.initialize()
             self.persona_updater.start()
         except BaseException:
             await self._shutdown_resources()
@@ -263,7 +265,10 @@ class VNextRuntimeOwner:
         self._flashback_locks.clear()
         self._recent_messages.clear()
         try:
-            await self.persona_updater.close()
+            try:
+                await self.diary.close()
+            finally:
+                await self.persona_updater.close()
         finally:
             if self._worker_started:
                 try:

@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-import json
-import os
-import re
-import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select, tuple_, update
@@ -245,7 +240,6 @@ class EvidenceService:
                 )
                 .values(payload={"redacted": True}, redacted_at=datetime.now(UTC))
             )
-        self._scrub_sleep_events(keys)
         return result.rowcount
 
     async def synchronize_redactions_from(self, source: EvidenceService) -> int:
@@ -273,123 +267,7 @@ class EvidenceService:
                         set_={"payload": {"redacted": True}, "redacted_at": row.redacted_at},
                     )
                 )
-        self._scrub_sleep_events(
-            tuple((row.stream_id, row.message_id) for row in tombstones)
-        )
         return len(tombstones)
-
-    def _scrub_sleep_events(
-        self,
-        references: tuple[tuple[str, str], ...],
-    ) -> None:
-        """清除包含指定来源 ID 的整理会话日志内容，保留审计标识。"""
-        keys = _normalized_references(references)
-        trace_path = self._schema.db_path.resolve().parent / "sleep-events.jsonl"
-        if not keys or not trace_path.is_file():
-            return
-        initial_stat = trace_path.stat()
-        message_patterns = tuple(
-            re.compile(
-                rf"(?<![A-Za-z0-9_-]){re.escape(message_id)}(?![A-Za-z0-9_-])"
-            )
-            for _, message_id in keys
-        )
-        affected_sessions: set[str] = set()
-        has_unparseable_row = False
-        with trace_path.open("r", encoding="utf-8", newline="") as handle:
-            for line in handle:
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError as error:
-                    has_unparseable_row = True
-                    if _matches_any(message_patterns, line):
-                        raise ValueError(
-                            "无法安全识别含有已删除来源的 Sleep 日志行"
-                        ) from error
-                    continue
-                if not isinstance(row, dict):
-                    has_unparseable_row = True
-                    if _matches_any(message_patterns, line):
-                        raise ValueError(
-                            "无法安全识别含有已删除来源的 Sleep 日志行"
-                        )
-                    continue
-                searchable = {
-                    key: value
-                    for key, value in row.items()
-                    if key not in {"time", "event", "sleep_session_id", "session_id"}
-                }
-                if not _matches_any(
-                    message_patterns,
-                    json.dumps(searchable, ensure_ascii=False, default=str),
-                ):
-                    continue
-                session_id = _trace_session_id(row)
-                if session_id is None:
-                    raise ValueError(
-                        "含有已删除来源的 Sleep 日志行缺少会话标识"
-                    )
-                affected_sessions.add(session_id)
-
-        if not affected_sessions:
-            return
-        if has_unparseable_row:
-            raise ValueError("Sleep 日志包含无法验证所属会话的行")
-        redacted_events = 0
-        temporary_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                newline="",
-                dir=trace_path.parent,
-                prefix=f".{trace_path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                temporary_path = Path(handle.name)
-                with trace_path.open("r", encoding="utf-8", newline="") as source:
-                    for line in source:
-                        row = json.loads(line)
-                        if not isinstance(row, dict) or _trace_session_id(
-                            row
-                        ) not in affected_sessions:
-                            handle.write(line)
-                            continue
-                        audit = {
-                            key: row[key]
-                            for key in (
-                                "time",
-                                "sleep_session_id",
-                                "session_id",
-                                "event",
-                            )
-                            if key in row
-                        }
-                        audit["data"] = {"redacted": True}
-                        handle.write(
-                            json.dumps(
-                                audit,
-                                ensure_ascii=False,
-                                separators=(",", ":"),
-                            )
-                            + _trace_newline(line)
-                        )
-                        redacted_events += 1
-                handle.flush()
-                os.fsync(handle.fileno())
-            if not redacted_events:
-                return
-            latest_stat = trace_path.stat()
-            if (
-                latest_stat.st_size != initial_stat.st_size
-                or latest_stat.st_mtime_ns != initial_stat.st_mtime_ns
-            ):
-                raise RuntimeError("Sleep 日志在隐私同步期间发生变化，请重试")
-            os.replace(temporary_path, trace_path)
-        finally:
-            if temporary_path is not None and temporary_path.exists():
-                temporary_path.unlink()
 
 
 def _normalized_references(
@@ -406,27 +284,3 @@ def _normalized_references(
             and message_id.strip()
         )
     )
-
-
-def _matches_any(patterns: tuple[re.Pattern[str], ...], value: str) -> bool:
-    """判断文本是否命中任一来源标识的精确匹配模式。"""
-    return any(pattern.search(value) for pattern in patterns)
-
-
-def _trace_session_id(row: dict[str, object]) -> str | None:
-    """从日志行读取整理会话的审计 ID。"""
-    value = row.get("sleep_session_id") or row.get("session_id")
-    if not isinstance(value, str) or not value.strip():
-        return None
-    return value.strip()
-
-
-def _trace_newline(line: str) -> str:
-    """返回 JSONL 行原有的换行序列。"""
-    if line.endswith("\r\n"):
-        return "\r\n"
-    if line.endswith("\n"):
-        return "\n"
-    if line.endswith("\r"):
-        return "\r"
-    return ""

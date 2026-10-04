@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from ..config import EngramMemoryConfig
+from ..diary.config import DiaryPolicy, TriggerMode
+from ..prompts import MEMORY_GUIDE_REMINDER
 from ..vnext import runtime, runtime_owner
 from ..vnext.domain import MemoryChanged, VectorUpsert
 from ..vnext.enums import MemoryEventType
@@ -44,6 +46,7 @@ def owner(monkeypatch: pytest.MonkeyPatch) -> VNextRuntimeOwner:
     vector_index = SimpleNamespace(ensure_active_manifest=AsyncMock())
     worker = SimpleNamespace(start=Mock(), stop=AsyncMock())
     updater = SimpleNamespace(close=AsyncMock(), enqueue=AsyncMock(), start=Mock())
+    diary = SimpleNamespace(initialize=AsyncMock(), close=AsyncMock())
     resources = {
         "VNextSchema": schema,
         "MemoryRepository": Mock(),
@@ -53,6 +56,7 @@ def owner(monkeypatch: pytest.MonkeyPatch) -> VNextRuntimeOwner:
         "VNextToolService": Mock(),
         "PersonaService": Mock(),
         "PersonaUpdater": updater,
+        "DiaryRuntime": diary,
         "VectorIndexService": vector_index,
         "VectorOutboxWorker": worker,
         "FlashbackService": SimpleNamespace(record_exposure=AsyncMock()),
@@ -371,14 +375,64 @@ def test_plugin_registers_exact_component_graph() -> None:
         "VNextMemorySearchTool", "VNextMemoryReadTool", "VNextPersonLookupTool",
         "VNextMemoryWriteAction", "VNextMemoryReviseAction", "VNextMemoryInvalidateAction",
         "VNextMemoryChangedEventHandler", "VNextFlashbackEventHandler", "VNextMemoryService",
+        "VNextPrivatePersonaEventHandler",
+        "ChatDiaryEventHandler",
         "VNextDoctorRouter", "VNextMemoryAdminRouter",
     }
-    assert len(components) == 11
+    assert len(components) == 13
     names = {component.__name__: component.name for component in components}
     assert names["VNextMemoryChangedEventHandler"] == "memory_changed"
     assert names["VNextFlashbackEventHandler"] == "vnext_flashback_injector"
+    assert names["VNextPrivatePersonaEventHandler"] == "private_persona"
+    assert isinstance(plugin.config, EngramMemoryConfig)
     plugin.config.plugin.enabled = False
     assert plugin.get_components() == []
+
+
+def test_memory_query_schemas_distinguish_recall_from_disclosure() -> None:
+    """三个查询入口的真实 Schema 提供回想用途，不引导复述私人内容。"""
+    from ..vnext.runtime_components import (
+        VNextMemoryReadTool,
+        VNextMemorySearchTool,
+        VNextPersonLookupTool,
+    )
+
+    for tool, instruction in (
+        (VNextMemorySearchTool, "不必在回复里复述"),
+        (VNextMemoryReadTool, "不因读到了就替对方向别人讲出来"),
+        (VNextPersonLookupTool, "不是要把他的情况介绍给旁人"),
+    ):
+        schema = tool.to_schema()
+        description = schema["function"]["description"]
+        assert description == tool.description
+        assert instruction in description
+    assert "current" in VNextMemoryReadTool.description
+    assert "history" in VNextMemoryReadTool.description
+    assert "full" in VNextMemoryReadTool.description
+    assert "revision_no" in VNextPersonLookupTool.description
+    assert "群聊中跟某个人开始聊天或有人新参与时" in VNextPersonLookupTool.description
+    assert "私聊直接使用自动注入的印象" in VNextPersonLookupTool.description
+
+
+def test_flashback_prompt_conveys_sudden_recall_and_keeps_complete_material() -> None:
+    """闪回呈现当前聊天突然唤起的记忆，并保留完整内容和核对标识。"""
+    from ..vnext.flashback_service import FlashbackCandidate
+
+    candidate = FlashbackCandidate(
+        "memory-example", "私下聊起的事情", "对方说过一件私事，还没有打算告诉别人。", "当前话题",
+    )
+    prompt = candidate.to_prompt_block()
+    assert candidate.memory_id in prompt
+    assert candidate.title in prompt
+    assert candidate.current_brief in prompt
+    assert candidate.matched_cue in prompt
+    assert prompt.startswith("【记忆闪回】\n")
+    assert "当前的聊天让你突然想起了这段记忆" in prompt
+    assert "供你理解当前语境参考" in prompt
+    assert "绝不要原样复述或机械背诵细节" in prompt
+    assert "若与当下对话无关就不要提及" in prompt
+    assert "结合此时此刻的情境" in prompt
+    assert "自然联想到的过去" not in prompt
 
 
 @pytest.mark.asyncio
@@ -406,6 +460,24 @@ async def test_plugin_load_refreshes_routers_and_registers_guide(
         f"engram_memory:router:{plugin_module.VNextMemoryAdminRouter.name}",
     }
     assert register_guide.call_args.kwargs["name"] == "engram_memory_guide"
+    assert isinstance(plugin.config, EngramMemoryConfig)
+    assert plugin.config.vnext.prompt_injection.reminder_at_end is True
+    assert register_guide.call_args.kwargs["insert_type"] is plugin_module.prompt_api.SystemReminderInsertType.DYNAMIC
+    guide = register_guide.call_args.kwargs["content"]
+    assert guide == MEMORY_GUIDE_REMINDER
+    for instruction in (
+        "可以主动回想，不必等对方要求", "不一定要把那件事说出来",
+        "即使他没有特意叮嘱保密", "跟本人私下接着聊", "不顺带补出其他人还不知道的细节",
+        "也不用向旁人强调自己知道却不能说", "绝不要在回复中原样背诵或机械复述",
+        "在当下的场景用适合的方式表达", "多换换说法",
+        "不把私人透露写成大家已经知道的事实", "current", "history", "full",
+        "source_message_ids", "primary_person_id", "secondary_person_ids",
+        "对方希望你怎样称呼他", "群聊里，跟某个人开始聊天", "必须先调用 `person_lookup`",
+        "私聊里，对方的人物印象会作为 SystemReminder 自动注入上下文",
+        "不要求开始聊天前再调用工具",
+    ):
+        assert instruction in guide
+    assert "相关时自然融入回答" not in guide
 
 
 @pytest.mark.asyncio
@@ -436,17 +508,56 @@ async def test_plugin_unload_cleans_guide_when_owner_close_fails(
     """Owner 关闭失败仍清除流闪回与全局引导语，并向调用者报错。"""
     from .. import plugin as plugin_module
 
-    plugin = plugin_module.EngramMemoryPlugin(EngramMemoryConfig())
+    plugin: Any = plugin_module.EngramMemoryPlugin(EngramMemoryConfig())
     resource = SimpleNamespace(close=AsyncMock(side_effect=RuntimeError("owner-test")))
     plugin.runtime_owner = cast(VNextRuntimeOwner, resource)
     plugin._flashback_reminder_streams["stream-1"] = {"flashback-test"}
+    plugin._persona_reminder_streams.add("stream-private")
     delete_stream = Mock()
     delete_guide = Mock()
     monkeypatch.setattr(plugin_module.prompt_api, "delete_stream_reminder", delete_stream)
     monkeypatch.setattr(plugin_module, "delete_owned_reminder", delete_guide)
     with pytest.raises(RuntimeError, match="owner-test"):
         await plugin.on_plugin_unloaded()
-    delete_stream.assert_called_once_with("stream-1", "actor", "flashback-test")
+    assert delete_stream.call_count == 2
+    delete_stream.assert_any_call("stream-1", "actor", "flashback-test")
+    delete_stream.assert_any_call("stream-private", "actor", plugin_module.PERSONA_REMINDER_NAME)
     delete_guide.assert_called_once_with("actor", "engram_memory_guide")
     assert not plugin._flashback_reminder_streams
+    assert not plugin._persona_reminder_streams
     assert plugin.runtime_owner is None
+
+
+def test_diary_defaults_and_independent_switches() -> None:
+    """群私聊默认开启，群聊同时满足条件，关闭其中一类不影响另一类。"""
+    config = EngramMemoryConfig()
+    assert config.diary.group.enabled and config.diary.private.enabled
+    assert config.diary.group.trigger_mode == "both"
+    assert config.diary.group.interval_seconds == 10800
+    assert config.diary.group.message_threshold == 200
+    assert config.diary.private.trigger_mode == "messages"
+    assert config.diary.private.message_threshold == 100
+    assert config.diary.group.context_days == config.diary.private.context_days == 7
+    config.diary.group.enabled = False
+    assert not config.diary.group.is_due(message_count=200, elapsed_seconds=10800)
+    assert config.diary.private.is_due(message_count=100, elapsed_seconds=0)
+    restored = EngramMemoryConfig.from_dict(config.model_dump())
+    assert not restored.diary.group.enabled and restored.diary.private.enabled
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [("time", (False, False, True, True)),
+     ("messages", (False, True, False, True)),
+     ("either", (False, True, True, True)),
+     ("both", (False, False, False, True))],
+)
+def test_diary_four_trigger_modes(mode: TriggerMode, expected: tuple[bool, ...]) -> None:
+    """时间和消息数的四种组合遵守各自边界，任何模式都不整理空批次。"""
+    policy = DiaryPolicy(trigger_mode=mode, interval_seconds=10, message_threshold=2)
+    actual = tuple(
+        policy.is_due(message_count=count, elapsed_seconds=elapsed)
+        for count, elapsed in ((1, 9), (2, 9), (1, 10), (2, 10))
+    )
+    assert actual == expected
+    assert not policy.is_due(message_count=0, elapsed_seconds=100)

@@ -6,6 +6,7 @@ from typing import Any, ClassVar, Self
 
 from src.app.plugin_system.base import BaseConfig, Field, SectionBase, config_section
 
+from .diary.config import DiaryConfig
 from .vnext.config_sections import VNextConfig
 
 
@@ -84,3 +85,4 @@ class EngramMemoryConfig(BaseConfig):
     storage: StorageSection = Field(default_factory=StorageSection)
 
     vnext: VNextConfig = Field(default_factory=VNextConfig)
+    diary: DiaryConfig = Field(default_factory=DiaryConfig)

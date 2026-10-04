@@ -17,6 +17,8 @@ from plugins.engram_memory.vnext.enums import (
     ActorType, EvidenceSourceType, MemoryEventType, MemoryKind,
     ParticipantKind, RevisionChangeReason, SubjectKind,
 )
+from ..vnext.evidence_service import EvidenceService
+from ..vnext.models import EvidenceMessageSnapshotModel
 from plugins.engram_memory.vnext.memory_service import MemoryService
 from plugins.engram_memory.vnext.repository import MemoryRepository
 from plugins.engram_memory.vnext.schema import VNextSchema
@@ -91,6 +93,48 @@ async def test_memory_changes_are_published_after_commit(tmp_path: Path) -> None
         ]
     finally:
         await schema.close()
+
+
+async def test_evidence_redactions_and_restore_use_database_snapshots(
+    tmp_path: Path,
+) -> None:
+    """隐私删除及恢复同步保留删除标记，不影响其他消息来源。"""
+    source_schema = VNextSchema(str(tmp_path / "source.db"))
+    restored_schema = VNextSchema(str(tmp_path / "restored.db"))
+    schemas = (source_schema, restored_schema)
+    source = EvidenceService(source_schema)
+    restored = EvidenceService(restored_schema)
+    reference = ("example-stream", "example-message")
+    retained_reference = ("example-stream", "retained-message")
+    try:
+        for schema in schemas:
+            await schema.initialize()
+            async with schema.database.session() as session:
+                for stream_id, message_id in (reference, retained_reference):
+                    session.add(EvidenceMessageSnapshotModel(
+                        stream_id=stream_id,
+                        message_id=message_id,
+                        captured_at=datetime.now(UTC),
+                        payload={"content": "Example source", "person_id": "example-person"},
+                        redacted_at=None,
+                    ))
+
+        assert await source.redact_messages(()) == 0
+        assert await source.redact_messages((reference, reference, ("", ""))) == 1
+        assert (await restored.read_messages((reference,)))[0]["redacted"] is False
+        assert await restored.synchronize_redactions_from(source) == 1
+        for service in (source, restored):
+            snapshot = (await service.read_messages((reference,)))[0]
+            assert snapshot["redacted"] is True
+            assert "content" not in snapshot
+            assert "person_id" not in snapshot
+            retained = (await service.read_messages((retained_reference,)))[0]
+            assert retained["redacted"] is False
+            assert retained["content"] == "Example source"
+    finally:
+        for schema in schemas:
+            await schema.close()
+    assert {path.name for path in tmp_path.iterdir()} == {"source.db", "restored.db"}
 
 
 async def test_actions_preserve_people_versions_sources_and_notifications(
