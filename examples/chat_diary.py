@@ -23,28 +23,41 @@ class LocalDiarySource(DiarySource):
         self.messages = messages
 
     async def allowed(
-        self, details: StreamDetails, message: Mapping[str, Any] | None = None,
+        self,
+        details: StreamDetails,
+        message: Mapping[str, Any] | None = None,
     ) -> bool:
         """允许本地示例中的所有消息。"""
         return True
 
     async def page(
-        self, progress: Progress, through_id: int, *, limit: int,
+        self,
+        progress: Progress,
+        through_id: int,
+        *,
+        limit: int,
     ) -> list[dict[str, Any]]:
         """返回游标之后、固定截止位置内的最早消息。"""
         return [
-            message for message in self.messages
+            message
+            for message in self.messages
             if progress.cursor_id < int(message["id"]) <= through_id
         ][:limit]
 
     async def context(
-        self, details: StreamDetails, first: Mapping[str, Any], limit: int,
+        self,
+        details: StreamDetails,
+        first: Mapping[str, Any],
+        limit: int,
     ) -> list[dict[str, Any]]:
         """示例不需要额外前文。"""
         return []
 
     async def formatted(
-        self, details: StreamDetails, rows: list[dict[str, Any]], zone: ZoneInfo,
+        self,
+        details: StreamDetails,
+        rows: list[dict[str, Any]],
+        zone: ZoneInfo,
     ) -> list[dict[str, object]]:
         """将示例消息转换为日记生成器可读的记录。"""
         return [
@@ -66,9 +79,24 @@ async def run_example() -> None:
     """验证同日正文替换、跨日归属与游标持久化。"""
     day_one = datetime(2026, 1, 1, 23, 50, tzinfo=UTC).timestamp()
     messages = [
-        {"id": 1, "message_id": "local-message-1", "time": day_one, "content": "讨论周末安排"},
-        {"id": 2, "message_id": "local-message-2", "time": day_one + 300, "content": "决定周六出发"},
-        {"id": 3, "message_id": "local-message-3", "time": day_one + 900, "content": "确认集合时间"},
+        {
+            "id": 1,
+            "message_id": "local-message-1",
+            "time": day_one,
+            "content": "讨论周末安排",
+        },
+        {
+            "id": 2,
+            "message_id": "local-message-2",
+            "time": day_one + 300,
+            "content": "决定周六出发",
+        },
+        {
+            "id": 3,
+            "message_id": "local-message-3",
+            "time": day_one + 900,
+            "content": "确认集合时间",
+        },
     ]
     details = StreamDetails("local-group", "local", "group", "local-group", "")
     with TemporaryDirectory(prefix="engram-chat-diary-") as directory:

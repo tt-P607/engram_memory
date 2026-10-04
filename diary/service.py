@@ -104,26 +104,36 @@ class DiarySource:
         if info["chat_type"] == "private":
             offset = 0
             while not user_id:
-                messages = await stream_api.get_stream_messages(stream_id, limit=100, offset=offset)
+                messages = await stream_api.get_stream_messages(
+                    stream_id, limit=100, offset=offset
+                )
                 if not messages:
                     break
                 for message in reversed(messages):
                     sender_id = str(message.sender_id or "")
                     if message.sender_role == "bot" or not sender_id:
                         continue
-                    if person_api.generate_person_id(str(info["platform"]), sender_id) == info["person_id"]:
+                    if (
+                        person_api.generate_person_id(str(info["platform"]), sender_id)
+                        == info["person_id"]
+                    ):
                         user_id = sender_id
                         break
                 offset += len(messages)
             if not user_id:
                 return None
         return StreamDetails(
-            stream_id, str(info["platform"]), str(info["chat_type"]),
-            str(info.get("group_id") or ""), user_id,
+            stream_id,
+            str(info["platform"]),
+            str(info["chat_type"]),
+            str(info.get("group_id") or ""),
+            user_id,
         )
 
     async def allowed(
-        self, details: StreamDetails, message: Mapping[str, Any] | None = None,
+        self,
+        details: StreamDetails,
+        message: Mapping[str, Any] | None = None,
     ) -> bool:
         """未知策略拒绝回填；私聊始终以对话对象而非 Bot 账号判断。"""
         if details.platform != "qq":
@@ -132,19 +142,29 @@ class DiarySource:
         if loaded is None:
             return False
         features = cast(CollectionConfig, loaded).features
-        user_id = details.user_id if details.chat_type == "private" else str(
-            message.get("sender_id") or "" if message is not None else ""
+        user_id = (
+            details.user_id
+            if details.chat_type == "private"
+            else str(message.get("sender_id") or "" if message is not None else "")
         )
         if user_id and user_id in {str(item) for item in features.ban_user_id}:
             return False
         if details.chat_type == "group":
             if not details.group_id:
                 return False
-            mode, entries, target = features.group_list_type, features.group_list, details.group_id
+            mode, entries, target = (
+                features.group_list_type,
+                features.group_list,
+                details.group_id,
+            )
         elif details.chat_type == "private":
             if not user_id:
                 return False
-            mode, entries, target = features.private_list_type, features.private_list, user_id
+            mode, entries, target = (
+                features.private_list_type,
+                features.private_list,
+                user_id,
+            )
         else:
             return False
         contained = target in {str(item) for item in entries}
@@ -153,16 +173,27 @@ class DiarySource:
         return mode == "blacklist" and not contained
 
     async def bootstrap_window(
-        self, stream_id: str, *, start_time: float, end_time: float,
+        self,
+        stream_id: str,
+        *,
+        start_time: float,
+        end_time: float,
     ) -> dict[str, int]:
         """仅首次取允许日期的真实记录，保存按主键排序的固定窗口。"""
         rows = await message_api.get_messages_by_time_in_chat_inclusive(
-            stream_id, start_time, end_time, limit=0, filter_bot=False,
+            stream_id,
+            start_time,
+            end_time,
+            limit=0,
+            filter_bot=False,
         )
         rows.sort(key=lambda row: int(row["id"]))
         self._windows[stream_id] = rows
         self._latest_messages[stream_id] = str(rows[-1]["message_id"]) if rows else ""
-        return {"last_id": int(rows[-1]["id"]) if rows else 0, "pending_count": len(rows)}
+        return {
+            "last_id": int(rows[-1]["id"]) if rows else 0,
+            "pending_count": len(rows),
+        }
 
     async def _pending_rows(self, progress: Progress) -> list[dict[str, Any]]:
         """倒查至成功消息锚点，再用公开时间查询复制其后的真实记录。"""
@@ -173,12 +204,15 @@ class DiarySource:
             and self._latest_messages.get(progress.stream_id) == latest_id
         ):
             self._windows[progress.stream_id] = [
-                row for row in self._windows[progress.stream_id] if int(row["id"]) > progress.cursor_id
+                row
+                for row in self._windows[progress.stream_id]
+                if int(row["id"]) > progress.cursor_id
             ]
             return self._windows[progress.stream_id]
         if progress.cursor_id == 0:
             await self.bootstrap_window(
-                progress.stream_id, start_time=progress.start_time,
+                progress.stream_id,
+                start_time=progress.start_time,
                 end_time=datetime.now(UTC).timestamp(),
             )
             return self._windows[progress.stream_id]
@@ -188,7 +222,9 @@ class DiarySource:
         offset = 0
         found = False
         while not found:
-            page = await stream_api.get_stream_messages(progress.stream_id, limit=100, offset=offset)
+            page = await stream_api.get_stream_messages(
+                progress.stream_id, limit=100, offset=offset
+            )
             if not page:
                 raise RuntimeError("日记成功消息锚点已不存在，停止推进处理位置")
             for message in reversed(page):
@@ -196,13 +232,22 @@ class DiarySource:
                 if message_id == progress.cursor_message_id:
                     found = True
                     break
-                selected.setdefault(message_id, float(message.time))
+                message_time = message.time
+                timestamp = (
+                    message_time.timestamp()
+                    if isinstance(message_time, datetime)
+                    else float(message_time)
+                )
+                selected.setdefault(message_id, timestamp)
             offset += len(page)
         rows = []
         if selected:
             material = await message_api.get_messages_by_time_in_chat_inclusive(
-                progress.stream_id, min(selected.values()), max(selected.values()),
-                limit=0, filter_bot=False,
+                progress.stream_id,
+                min(selected.values()),
+                max(selected.values()),
+                limit=0,
+                filter_bot=False,
             )
             rows = [row for row in material if str(row["message_id"]) in selected]
             if {str(row["message_id"]) for row in rows} != set(selected):
@@ -214,57 +259,105 @@ class DiarySource:
 
     async def window(self, progress: Progress) -> dict[str, int]:
         """取得本轮可见的固定水位，重启后只续读成功锚点之后的消息。"""
-        rows = [row for row in await self._pending_rows(progress)
-                if int(row["id"]) > progress.cursor_id
-                and (int(row["id"]) > progress.bootstrap_through or float(row["time"]) >= progress.start_time)]
+        rows = [
+            row
+            for row in await self._pending_rows(progress)
+            if int(row["id"]) > progress.cursor_id
+            and (
+                int(row["id"]) > progress.bootstrap_through
+                or float(row["time"]) >= progress.start_time
+            )
+        ]
         return {
-            "last_id": max((int(row["id"]) for row in rows), default=progress.cursor_id),
+            "last_id": max(
+                (int(row["id"]) for row in rows), default=progress.cursor_id
+            ),
             "pending_count": len(rows),
         }
 
     async def page(
-        self, progress: Progress, through_id: int, *, limit: int,
+        self,
+        progress: Progress,
+        through_id: int,
+        *,
+        limit: int,
     ) -> list[dict[str, Any]]:
         """连续读取最旧未处理页，保留全部实际角色。"""
         rows = self._windows.get(progress.stream_id)
         if rows is None:
             rows = await self._pending_rows(progress)
-        return [row for row in rows if progress.cursor_id < int(row["id"]) <= through_id
-                and (int(row["id"]) > progress.bootstrap_through or float(row["time"]) >= progress.start_time)][:limit]
+        return [
+            row
+            for row in rows
+            if progress.cursor_id < int(row["id"]) <= through_id
+            and (
+                int(row["id"]) > progress.bootstrap_through
+                or float(row["time"]) >= progress.start_time
+            )
+        ][:limit]
 
     async def context(
-        self, details: StreamDetails, first: Mapping[str, Any], limit: int,
+        self,
+        details: StreamDetails,
+        first: Mapping[str, Any],
+        limit: int,
     ) -> list[dict[str, Any]]:
         """读取少量前文，过滤当前禁止采集的发言。"""
         if not limit:
             return []
         rows = await message_api.get_messages_before_time_in_chat(
-            details.stream_id, float(first["time"]), limit=limit,
+            details.stream_id,
+            float(first["time"]),
+            limit=limit,
         )
-        rows.extend(await message_api.get_messages_by_time_in_chat_inclusive(
-            details.stream_id, float(first["time"]), float(first["time"]), limit=0,
-        ))
-        preceding = {int(row["id"]): row for row in rows if int(row["id"]) < int(first["id"])}
+        rows.extend(
+            await message_api.get_messages_by_time_in_chat_inclusive(
+                details.stream_id,
+                float(first["time"]),
+                float(first["time"]),
+                limit=0,
+            )
+        )
+        preceding = {
+            int(row["id"]): row for row in rows if int(row["id"]) < int(first["id"])
+        }
         ordered = [preceding[row_id] for row_id in sorted(preceding)][-limit:]
         return [row for row in ordered if await self.allowed(details, row)]
 
     async def formatted(
-        self, details: StreamDetails, rows: list[dict[str, Any]], zone: ZoneInfo,
+        self,
+        details: StreamDetails,
+        rows: list[dict[str, Any]],
+        zone: ZoneInfo,
     ) -> list[dict[str, object]]:
         """复制真实发言，标注 Bot 身份、绝对日期与回复关系。"""
         bot_info = await adapter_api.get_bot_info_by_platform(details.platform)
         bot_id = str(bot_info.get("bot_id") or "") if bot_info else ""
-        return [{
-            "message_id": str(row["message_id"]),
-            "time": datetime.fromtimestamp(float(row["time"]), zone).isoformat(),
-            "speaker": str(row.get("sender_cardname") or row.get("sender_name") or row.get("sender_id") or "未知发言者"),
-            "sender_id": str(row.get("sender_id") or ""),
-            "role": "bot" if row.get("person_id") == "bot"
-            or (bot_id and str(row.get("sender_id")) == bot_id) else "participant",
-            "text": str(row.get("processed_plain_text") or row.get("content") or "[无可读内容]"),
-            "message_type": str(row.get("message_type") or "text"),
-            "reply_to": row.get("reply_to"),
-        } for row in rows]
+        return [
+            {
+                "message_id": str(row["message_id"]),
+                "time": datetime.fromtimestamp(float(row["time"]), zone).isoformat(),
+                "speaker": str(
+                    row.get("sender_cardname")
+                    or row.get("sender_name")
+                    or row.get("sender_id")
+                    or "未知发言者"
+                ),
+                "sender_id": str(row.get("sender_id") or ""),
+                "role": "bot"
+                if row.get("person_id") == "bot"
+                or (bot_id and str(row.get("sender_id")) == bot_id)
+                else "participant",
+                "text": str(
+                    row.get("processed_plain_text")
+                    or row.get("content")
+                    or "[无可读内容]"
+                ),
+                "message_type": str(row.get("message_type") or "text"),
+                "reply_to": row.get("reply_to"),
+            }
+            for row in rows
+        ]
 
 
 DiaryGenerator = Callable[[dict[str, object]], Awaitable[str]]
@@ -274,7 +367,11 @@ class DiaryService:
     """每批只整理一个日期，成功后原子提交该日期及流进度。"""
 
     def __init__(
-        self, config: DiaryConfig, store: DiaryStore, *, source: DiarySource | None = None,
+        self,
+        config: DiaryConfig,
+        store: DiaryStore,
+        *,
+        source: DiarySource | None = None,
         generator: DiaryGenerator | None = None,
     ) -> None:
         """绑定独立存储、公开消息源与可测试的生成器。"""
@@ -290,28 +387,46 @@ class DiaryService:
         if progress is not None:
             return progress
         policy = self.config.policy_for(details.chat_type)
-        first_day = datetime.fromtimestamp(now, self.zone).date() - timedelta(days=policy.context_days - 1)
+        first_day = datetime.fromtimestamp(now, self.zone).date() - timedelta(
+            days=policy.context_days - 1
+        )
         start_time = datetime.combine(first_day, time.min, self.zone).timestamp()
-        window = await self.source.bootstrap_window(details.stream_id, start_time=start_time, end_time=now)
+        window = await self.source.bootstrap_window(
+            details.stream_id, start_time=start_time, end_time=now
+        )
         return await self.store.ensure_stream(
-            details.stream_id, details.chat_type, start_time=start_time,
-            bootstrap_through=window["last_id"], now=now,
+            details.stream_id,
+            details.chat_type,
+            start_time=start_time,
+            bootstrap_through=window["last_id"],
+            now=now,
         )
 
     async def process_batch(
-        self, details: StreamDetails, through_id: int, *, now: float,
+        self,
+        details: StreamDetails,
+        through_id: int,
+        *,
+        now: float,
     ) -> bool:
         """处理固定水位内的最早连续同日批次，失败不修改正文和进度。"""
         progress = await self.store.progress(details.stream_id)
         if progress is None:
             raise RuntimeError("日记流尚未初始化")
-        rows = await self.source.page(progress, through_id, limit=self.config.batch_messages)
+        rows = await self.source.page(
+            progress, through_id, limit=self.config.batch_messages
+        )
         if not rows:
             return False
-        day = datetime.fromtimestamp(float(rows[0]["time"]), self.zone).date().isoformat()
+        day = (
+            datetime.fromtimestamp(float(rows[0]["time"]), self.zone).date().isoformat()
+        )
         batch = []
         for row in rows:
-            if datetime.fromtimestamp(float(row["time"]), self.zone).date().isoformat() != day:
+            if (
+                datetime.fromtimestamp(float(row["time"]), self.zone).date().isoformat()
+                != day
+            ):
                 break
             batch.append(row)
         allowed = [row for row in batch if await self.source.allowed(details, row)]
@@ -320,29 +435,51 @@ class DiaryService:
         diary = None
         if allowed:
             payload: dict[str, object] = {
-                "target_date": day, "timezone": self.config.timezone,
+                "target_date": day,
+                "timezone": self.config.timezone,
                 "chat_type": details.chat_type,
                 "existing_diary": old.body if old else "",
-                "preceding_context": await self.source.formatted(details, await self.source.context(
-                    details, allowed[0], self.config.context_messages,
-                ), self.zone),
-                "new_messages": await self.source.formatted(details, allowed, self.zone),
+                "preceding_context": await self.source.formatted(
+                    details,
+                    await self.source.context(
+                        details,
+                        allowed[0],
+                        self.config.context_messages,
+                    ),
+                    self.zone,
+                ),
+                "new_messages": await self.source.formatted(
+                    details, allowed, self.zone
+                ),
             }
             body = await self.generate(payload)
             if old is not None and old.body and not body.strip():
                 raise ValueError("模型不能用空正文抹掉当天已有日记")
             if body.strip():
                 diary = Diary(
-                    details.stream_id, day, body, end_id,
-                    max([float(row["time"]) for row in allowed] + ([old.through_time] if old else [])), now,
+                    details.stream_id,
+                    day,
+                    body,
+                    end_id,
+                    max(
+                        [float(row["time"]) for row in allowed]
+                        + ([old.through_time] if old else [])
+                    ),
+                    now,
                 )
-        if not self.config.policy_for(details.chat_type).enabled or not await self.source.allowed(details):
+        if not self.config.policy_for(
+            details.chat_type
+        ).enabled or not await self.source.allowed(details):
             raise RuntimeError("生成期间聊天日记已关闭或采集许可已撤回")
         for row in allowed:
             if not await self.source.allowed(details, row):
                 raise RuntimeError("生成期间发言者的采集许可已变化")
         await self.store.commit_batch(
-            progress, through_id=end_id, message_id=str(batch[-1]["message_id"]), now=now, diary=diary,
+            progress,
+            through_id=end_id,
+            message_id=str(batch[-1]["message_id"]),
+            now=now,
+            diary=diary,
         )
         return True
 
@@ -352,15 +489,29 @@ class DiaryService:
             return await self._generator(payload)
         persona = config_api.get_core_config().personality.model_dump(mode="json")
         request = llm_api.create_llm_request(
-            llm_api.get_model_set_by_task("actor"), request_name=DIARY_REQUEST_NAME,
+            llm_api.get_model_set_by_task("actor"),
+            request_name=DIARY_REQUEST_NAME,
         )
-        request.add_payload(LLMPayload(ROLE.SYSTEM, Text(
-            "下面是你的完整人设。你的身份、经历、性格、表达习惯和相处边界都以它为准：\n"
-            + json.dumps(persona, ensure_ascii=False) + "\n\n" + DIARY_INSTRUCTIONS,
-        )))
-        request.add_payload(LLMPayload(ROLE.USER, Text(json.dumps(payload, ensure_ascii=False))))
+        request.add_payload(
+            LLMPayload(
+                ROLE.SYSTEM,
+                Text(
+                    "下面是你的完整人设。你的身份、经历、性格、表达习惯和相处边界都以它为准：\n"
+                    + json.dumps(persona, ensure_ascii=False)
+                    + "\n\n"
+                    + DIARY_INSTRUCTIONS,
+                ),
+            )
+        )
+        request.add_payload(
+            LLMPayload(ROLE.USER, Text(json.dumps(payload, ensure_ascii=False)))
+        )
         response = await request.send(stream=False)
         result = json.loads((await response).strip())
-        if not isinstance(result, dict) or set(result) != {"body"} or not isinstance(result["body"], str):
+        if (
+            not isinstance(result, dict)
+            or set(result) != {"body"}
+            or not isinstance(result["body"], str)
+        ):
             raise ValueError("日记模型必须返回唯一 body 文本字段")
         return result["body"]

@@ -98,7 +98,8 @@ class EvidenceService:
                 and payload.get("sender_id") not in {"bot", "system"}
             ):
                 payload["person_id"] = person_api.generate_person_id(
-                    str(payload["platform"]), str(payload["sender_id"]),
+                    str(payload["platform"]),
+                    str(payload["sender_id"]),
                 )
             # person_id 只标识发送账号，不证明发送者是真人。
             if (
@@ -140,7 +141,9 @@ class EvidenceService:
             for message in item.messages
             if message.snapshot is not None
         }
-        missing = tuple(key for key in references if key not in saved and key not in supplied)
+        missing = tuple(
+            key for key in references if key not in saved and key not in supplied
+        )
         needs_reply_metadata = tuple(
             key
             for key in references
@@ -149,10 +152,14 @@ class EvidenceService:
             and "reply_to" not in (supplied.get(key) or {})
         )
         fetch_references = tuple(dict.fromkeys((*missing, *needs_reply_metadata)))
-        fetched = {
-            (str(row.get("stream_id") or ""), str(row.get("message_id") or "")): row
-            for row in await self._message_reader(fetch_references)
-        } if fetch_references else {}
+        fetched = (
+            {
+                (str(row.get("stream_id") or ""), str(row.get("message_id") or "")): row
+                for row in await self._message_reader(fetch_references)
+            }
+            if fetch_references
+            else {}
+        )
         payloads: dict[tuple[str, str], dict[str, object]] = {}
         for key in references:
             saved_payload = saved.get(key)
@@ -173,20 +180,32 @@ class EvidenceService:
                     ):
                         payload["reply_to"] = candidate["reply_to"]
                         break
-            if (str(payload.get("stream_id") or ""), str(payload.get("message_id") or "")) != key:
+            if (
+                str(payload.get("stream_id") or ""),
+                str(payload.get("message_id") or ""),
+            ) != key:
                 raise ValueError("来源快照与引用消息标识不一致")
             if payload.get("time") is None:
                 raise ValueError("来源快照缺少消息时间")
-            if not any(payload.get(field) for field in ("sender_id", "person_id", "sender_name", "speaker")):
+            if not any(
+                payload.get(field)
+                for field in ("sender_id", "person_id", "sender_name", "speaker")
+            ):
                 raise ValueError("来源快照缺少发送者")
-            if not any(payload.get(field) for field in ("processed_plain_text", "content", "text")):
+            if not any(
+                payload.get(field)
+                for field in ("processed_plain_text", "content", "text")
+            ):
                 raise ValueError("来源快照缺少理解记忆所需的消息内容")
             payloads[key] = _json_value(payload)
         return tuple(
             replace(
                 item,
                 messages=tuple(
-                    replace(message, snapshot=payloads[(message.stream_id, message.message_id)])
+                    replace(
+                        message,
+                        snapshot=payloads[(message.stream_id, message.message_id)],
+                    )
                     for message in item.messages
                 ),
             )
@@ -209,9 +228,7 @@ class EvidenceService:
                     captured_at=datetime.now(UTC),
                     redacted_at=None,
                 )
-                .on_conflict_do_nothing(
-                    index_elements=["stream_id", "message_id"]
-                )
+                .on_conflict_do_nothing(index_elements=["stream_id", "message_id"])
             )
             saved = await session.get(
                 EvidenceMessageSnapshotModel, (message.stream_id, message.message_id)
@@ -222,9 +239,7 @@ class EvidenceService:
             if "reply_to" not in saved.payload and "reply_to" in payload:
                 saved.payload = {**saved.payload, "reply_to": payload["reply_to"]}
 
-    async def redact_messages(
-        self, references: tuple[tuple[str, str], ...]
-    ) -> int:
+    async def redact_messages(self, references: tuple[tuple[str, str], ...]) -> int:
         """管理端显式隐私删除消息正文和人物信息，保留不可恢复标记。"""
         keys = _normalized_references(references)
         if not keys:
@@ -245,26 +260,35 @@ class EvidenceService:
     async def synchronize_redactions_from(self, source: EvidenceService) -> int:
         """从来源库同步隐私删除标记，防止备份恢复后重新暴露已删除来源。"""
         async with source._schema.database.session() as session:
-            tombstones = tuple((await session.execute(
-                select(
-                    EvidenceMessageSnapshotModel.stream_id,
-                    EvidenceMessageSnapshotModel.message_id,
-                    EvidenceMessageSnapshotModel.captured_at,
-                    EvidenceMessageSnapshotModel.redacted_at,
-                ).where(EvidenceMessageSnapshotModel.redacted_at.is_not(None))
-            )).all())
+            tombstones = tuple(
+                (
+                    await session.execute(
+                        select(
+                            EvidenceMessageSnapshotModel.stream_id,
+                            EvidenceMessageSnapshotModel.message_id,
+                            EvidenceMessageSnapshotModel.captured_at,
+                            EvidenceMessageSnapshotModel.redacted_at,
+                        ).where(EvidenceMessageSnapshotModel.redacted_at.is_not(None))
+                    )
+                ).all()
+            )
         async with self._schema.database.session() as session:
             for row in tombstones:
                 await session.execute(
-                    insert(EvidenceMessageSnapshotModel).values(
+                    insert(EvidenceMessageSnapshotModel)
+                    .values(
                         stream_id=row.stream_id,
                         message_id=row.message_id,
                         captured_at=row.captured_at,
                         payload={"redacted": True},
                         redacted_at=row.redacted_at,
-                    ).on_conflict_do_update(
+                    )
+                    .on_conflict_do_update(
                         index_elements=["stream_id", "message_id"],
-                        set_={"payload": {"redacted": True}, "redacted_at": row.redacted_at},
+                        set_={
+                            "payload": {"redacted": True},
+                            "redacted_at": row.redacted_at,
+                        },
                     )
                 )
         return len(tombstones)

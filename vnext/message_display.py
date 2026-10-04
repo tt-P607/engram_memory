@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 
-
 _REPLY_PREVIEW = re.compile(r"^\[回复<[^>]*>：(.*?)\]，说：(.*)$", re.DOTALL)
 
 

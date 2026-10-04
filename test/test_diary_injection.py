@@ -21,18 +21,22 @@ from src.kernel.llm.roles import ROLE
 
 from ..diary.events import ChatDiaryEventHandler
 from ..diary.injection import REMINDER_NAME, refresh_diary_payloads
+from ..diary.runtime import DiaryRuntime
 
 
-class _DiaryRuntime:
+class _DiaryRuntime(DiaryRuntime):
     """供事件测试使用的内存 runtime。"""
 
     ready = True
 
     def __init__(self, content: str = "") -> None:
+        """保留真实提醒生命周期，日记读取和调度仅在内存模拟。"""
         self.content = content
-        self.include_tail: list[bool] = []
+        self.read_streams: list[str] = []
         self.observed: list[str] = []
         self.started = 0
+        self._closed = False
+        self._reminders: set[str] = set()
 
     def start(self) -> None:
         """记录启动调用。"""
@@ -42,9 +46,9 @@ class _DiaryRuntime:
         """记录被唤醒的流。"""
         self.observed.append(stream_id)
 
-    async def reminder_content(self, stream_id: str, *, include_tail: bool = False) -> str:
-        """返回测试配置内容并记录 tail 请求。"""
-        self.include_tail.append(include_tail)
+    async def reminder_content(self, stream_id: str) -> str:
+        """返回测试日记并记录读取的聊天流。"""
+        self.read_streams.append(stream_id)
         return self.content
 
 
@@ -52,6 +56,7 @@ class _RuntimeOwner:
     """持有内存日记 runtime。"""
 
     def __init__(self, runtime: _DiaryRuntime) -> None:
+        """绑定测试日记运行时。"""
         self.diary = runtime
 
 
@@ -59,6 +64,7 @@ class _Plugin:
     """提供事件处理器所需的 owner。"""
 
     def __init__(self, runtime: _DiaryRuntime) -> None:
+        """建立事件侧最小 Owner。"""
         self.runtime_owner = _RuntimeOwner(runtime)
 
 
@@ -149,18 +155,24 @@ def test_diary_stays_at_tail_while_flashback_remains_in_history(
     assert items[0].insert_type is prompt_api.SystemReminderInsertType.FIXED
     assert items[0].consume_type is prompt_api.SystemReminderConsumeType.FOREVER
 
-    reminder_store.set(f"stream:{stream_id}:actor", REMINDER_NAME, "第一版日记", insert_type="dynamic")
+    reminder_store.set(
+        f"stream:{stream_id}:actor", REMINDER_NAME, "第一版日记", insert_type="dynamic"
+    )
     request = _new_request(stream_id, reminder_store)
     request.add_payload(LLMPayload(ROLE.USER, Text("第一轮")))
     request.add_payload(LLMPayload(ROLE.ASSISTANT, Text("第一轮回复")))
-    reminder_store.set(f"stream:{stream_id}:actor", REMINDER_NAME, "第二版日记", insert_type="dynamic")
+    reminder_store.set(
+        f"stream:{stream_id}:actor", REMINDER_NAME, "第二版日记", insert_type="dynamic"
+    )
     request.add_payload(LLMPayload(ROLE.USER, Text("第二轮")))
     assert refresh_diary_payloads(request.payloads, "第二版日记")
     assert any(name in text for text in _text_parts(request.payloads[0]))
     assert not any(REMINDER_NAME in text for text in _text_parts(request.payloads[0]))
     assert any("第二版日记" in text for text in _text_parts(request.payloads[-1]))
 
-    reminder_store.set(f"stream:{stream_id}:actor", REMINDER_NAME, "第三版日记", insert_type="dynamic")
+    reminder_store.set(
+        f"stream:{stream_id}:actor", REMINDER_NAME, "第三版日记", insert_type="dynamic"
+    )
     resumed = _new_request(stream_id, reminder_store)
     for payload in request.payloads:
         resumed.add_payload(payload)
@@ -170,8 +182,14 @@ def test_diary_stays_at_tail_while_flashback_remains_in_history(
     flattened = [text for payload in resumed.payloads for text in _text_parts(payload)]
     assert sum(f"[{name}]" in text for text in flattened) == 1
     assert sum(f"[{REMINDER_NAME}]" in text for text in flattened) == 1
-    assert any(candidate.to_prompt_block() in text for text in _text_parts(resumed.payloads[0]))
-    assert all(REMINDER_NAME not in text for payload in resumed.payloads[:-1] for text in _text_parts(payload))
+    assert any(
+        candidate.to_prompt_block() in text for text in _text_parts(resumed.payloads[0])
+    )
+    assert all(
+        REMINDER_NAME not in text
+        for payload in resumed.payloads[:-1]
+        for text in _text_parts(payload)
+    )
     assert any("第三版日记" in text for text in _text_parts(resumed.payloads[-1]))
     assert not any(name in text for text in _text_parts(resumed.payloads[-1]))
     assert not any("第一版日记" in text or "第二版日记" in text for text in flattened)
@@ -180,7 +198,9 @@ def test_diary_stays_at_tail_while_flashback_remains_in_history(
 @pytest.mark.parametrize("preload", [False, True])
 @pytest.mark.asyncio
 async def test_private_persona_is_fixed_in_first_user_and_refreshes_without_duplicates(
-    reminder_store: SystemReminderStore, monkeypatch: pytest.MonkeyPatch, preload: bool,
+    reminder_store: SystemReminderStore,
+    monkeypatch: pytest.MonkeyPatch,
+    preload: bool,
 ) -> None:
     """私聊固定首 User，跨轮更新唯一正文，并与末尾指引和日记互不干扰。"""
     from types import SimpleNamespace
@@ -197,13 +217,20 @@ async def test_private_persona_is_fixed_in_first_user_and_refreshes_without_dupl
     stream_id = "stream-private"
     plugin = plugin_module.EngramMemoryPlugin(EngramMemoryConfig())
     persona = SimpleNamespace(
-        person_id="person-example", impression_text="他希望我叫他小树。①", is_current=True,
+        person_id="person-example",
+        impression_text="他希望我叫他小树。①",
+        is_current=True,
     )
     read_persona = AsyncMock(return_value=persona)
-    plugin.runtime_owner = cast(plugin_module.VNextRuntimeOwner, SimpleNamespace(
-        persona_service=SimpleNamespace(get_persona=read_persona),
-    ))
-    get_stream = AsyncMock(return_value={"chat_type": "private", "person_id": "person-example"})
+    plugin.runtime_owner = cast(
+        plugin_module.VNextRuntimeOwner,
+        SimpleNamespace(
+            persona_service=SimpleNamespace(get_persona=read_persona),
+        ),
+    )
+    get_stream = AsyncMock(
+        return_value={"chat_type": "private", "person_id": "person-example"}
+    )
     monkeypatch.setattr(persona_injection.stream_api, "get_stream_info", get_stream)
     handler = persona_injection.VNextPrivatePersonaEventHandler(plugin)
     if preload:
@@ -212,27 +239,45 @@ async def test_private_persona_is_fixed_in_first_user_and_refreshes_without_dupl
     else:
         read_persona.assert_not_awaited()
     reminder_store.set(
-        f"stream:{stream_id}:actor", "engram_memory_guide", MEMORY_GUIDE_REMINDER, insert_type="dynamic",
+        f"stream:{stream_id}:actor",
+        "engram_memory_guide",
+        MEMORY_GUIDE_REMINDER,
+        insert_type="dynamic",
     )
-    reminder_store.set(f"stream:{stream_id}:actor", REMINDER_NAME, "今日回顾", insert_type="dynamic")
+    reminder_store.set(
+        f"stream:{stream_id}:actor", REMINDER_NAME, "今日回顾", insert_type="dynamic"
+    )
     request = _new_request(stream_id, reminder_store)
     request.add_payload(LLMPayload(ROLE.USER, Text("第一轮")))
     request.add_payload(LLMPayload(ROLE.ASSISTANT, Text("第一轮回复")))
     request.add_payload(LLMPayload(ROLE.USER, Text("第二轮")))
-    params = {"request_name": "example_chat", "meta_data": {"stream_id": stream_id}, "payloads": request.payloads}
+    params = {
+        "request_name": "example_chat",
+        "meta_data": {"stream_id": stream_id},
+        "payloads": request.payloads,
+    }
     await handler.execute(EventType.BEFORE_LLM_REQUEST, params)
-    items = reminder_store.get_items(f"stream:{stream_id}:actor", names=[persona_injection.REMINDER_NAME])
+    items = reminder_store.get_items(
+        f"stream:{stream_id}:actor", names=[persona_injection.REMINDER_NAME]
+    )
     assert len(items) == 1
     assert items[0].insert_type is prompt_api.SystemReminderInsertType.FIXED
     assert items[0].consume_type is prompt_api.SystemReminderConsumeType.FOREVER
     assert stream_id in plugin._persona_reminder_streams
-    assert all(call.args == ("person-example",) for call in read_persona.await_args_list)
-    assert any(persona.impression_text in text for text in _text_parts(params["payloads"][0]))
+    assert all(
+        call.args == ("person-example",) for call in read_persona.await_args_list
+    )
+    assert any(
+        persona.impression_text in text for text in _text_parts(params["payloads"][0])
+    )
     assert all(
         persona_injection.REMINDER_NAME not in text
-        for payload in params["payloads"][1:] for text in _text_parts(payload)
+        for payload in params["payloads"][1:]
+        for text in _text_parts(payload)
     )
-    assert any("engram_memory_guide" in text for text in _text_parts(params["payloads"][-1]))
+    assert any(
+        "engram_memory_guide" in text for text in _text_parts(params["payloads"][-1])
+    )
     assert any("今日回顾" in text for text in _text_parts(params["payloads"][-1]))
 
     persona.impression_text = "他希望我叫他阿树。①"
@@ -243,21 +288,36 @@ async def test_private_persona_is_fixed_in_first_user_and_refreshes_without_dupl
     resumed.add_payload(LLMPayload(ROLE.USER, Text("第三轮")))
     params["payloads"] = resumed.payloads
     await handler.execute(EventType.BEFORE_LLM_REQUEST, params)
-    flattened = [text for payload in params["payloads"] for text in _text_parts(payload)]
-    assert sum(f"[{persona_injection.REMINDER_NAME}]" in text for text in flattened) == 1
-    assert any(persona.impression_text in text for text in _text_parts(params["payloads"][0]))
+    flattened = [
+        text for payload in params["payloads"] for text in _text_parts(payload)
+    ]
+    assert (
+        sum(f"[{persona_injection.REMINDER_NAME}]" in text for text in flattened) == 1
+    )
+    assert any(
+        persona.impression_text in text for text in _text_parts(params["payloads"][0])
+    )
     assert not any("小树" in text for text in flattened)
-    assert any("engram_memory_guide" in text for text in _text_parts(params["payloads"][-1]))
+    assert any(
+        "engram_memory_guide" in text for text in _text_parts(params["payloads"][-1])
+    )
     assert any("今日回顾" in text for text in _text_parts(params["payloads"][-1]))
     other = _new_request("stream-other", reminder_store)
     other.add_payload(LLMPayload(ROLE.USER, Text("另一私聊")))
-    assert all(persona_injection.REMINDER_NAME not in text for text in _text_parts(other.payloads[0]))
+    assert all(
+        persona_injection.REMINDER_NAME not in text
+        for text in _text_parts(other.payloads[0])
+    )
 
 
-@pytest.mark.parametrize("missing", ["group", "stream", "identity", "snapshot", "uncertified", "empty"])
+@pytest.mark.parametrize(
+    "missing", ["group", "stream", "identity", "snapshot", "uncertified", "empty"]
+)
 @pytest.mark.asyncio
 async def test_private_persona_removes_old_block_when_no_current_impression(
-    reminder_store: SystemReminderStore, monkeypatch: pytest.MonkeyPatch, missing: str,
+    reminder_store: SystemReminderStore,
+    monkeypatch: pytest.MonkeyPatch,
+    missing: str,
 ) -> None:
     """群聊或缺少可信当前印象时移除自身旧块，不生成、不回退旧残留。"""
     from types import SimpleNamespace
@@ -270,27 +330,53 @@ async def test_private_persona_removes_old_block_when_no_current_impression(
     from ..vnext import persona_injection
 
     plugin = plugin_module.EngramMemoryPlugin(EngramMemoryConfig())
-    info = {"chat_type": "group" if missing == "group" else "private", "person_id": "" if missing == "identity" else "person-example"}
+    info = {
+        "chat_type": "group" if missing == "group" else "private",
+        "person_id": "" if missing == "identity" else "person-example",
+    }
     persona = SimpleNamespace(
-        person_id="person-example", impression_text="" if missing == "empty" else "未经认证的旧印象",
+        person_id="person-example",
+        impression_text="" if missing == "empty" else "未经认证的旧印象",
         is_current=missing != "uncertified",
     )
     lookup = AsyncMock(return_value=None if missing == "snapshot" else persona)
-    plugin.runtime_owner = cast(plugin_module.VNextRuntimeOwner, SimpleNamespace(
-        persona_service=SimpleNamespace(get_persona=lookup),
-    ))
-    monkeypatch.setattr(persona_injection.stream_api, "get_stream_info", AsyncMock(
-        return_value=None if missing == "stream" else info,
-    ))
+    plugin.runtime_owner = cast(
+        plugin_module.VNextRuntimeOwner,
+        SimpleNamespace(
+            persona_service=SimpleNamespace(get_persona=lookup),
+        ),
+    )
+    monkeypatch.setattr(
+        persona_injection.stream_api,
+        "get_stream_info",
+        AsyncMock(
+            return_value=None if missing == "stream" else info,
+        ),
+    )
     stream_id = "stream-example"
-    reminder_store.set(f"stream:{stream_id}:actor", persona_injection.REMINDER_NAME, "旧印象", insert_type="fixed")
-    reminder_store.set(f"stream:{stream_id}:actor", REMINDER_NAME, "保留日记", insert_type="dynamic")
+    reminder_store.set(
+        f"stream:{stream_id}:actor",
+        persona_injection.REMINDER_NAME,
+        "旧印象",
+        insert_type="fixed",
+    )
+    reminder_store.set(
+        f"stream:{stream_id}:actor", REMINDER_NAME, "保留日记", insert_type="dynamic"
+    )
     plugin._persona_reminder_streams.add(stream_id)
     request = _new_request(stream_id, reminder_store)
     request.add_payload(LLMPayload(ROLE.USER, Text("聊天正文")))
-    params = {"request_name": "example_chat", "meta_data": {"stream_id": stream_id}, "payloads": request.payloads}
-    await persona_injection.VNextPrivatePersonaEventHandler(plugin).execute(EventType.BEFORE_LLM_REQUEST, params)
-    assert not reminder_store.get_items(f"stream:{stream_id}:actor", names=[persona_injection.REMINDER_NAME])
+    params = {
+        "request_name": "example_chat",
+        "meta_data": {"stream_id": stream_id},
+        "payloads": request.payloads,
+    }
+    await persona_injection.VNextPrivatePersonaEventHandler(plugin).execute(
+        EventType.BEFORE_LLM_REQUEST, params
+    )
+    assert not reminder_store.get_items(
+        f"stream:{stream_id}:actor", names=[persona_injection.REMINDER_NAME]
+    )
     assert stream_id not in plugin._persona_reminder_streams
     texts = [text for payload in params["payloads"] for text in _text_parts(payload)]
     assert not any("旧印象" in text or "未经认证" in text for text in texts)
@@ -302,10 +388,15 @@ async def test_private_persona_removes_old_block_when_no_current_impression(
         lookup.assert_awaited_once_with("person-example")
 
 
-@pytest.mark.parametrize("request_name", ["engram_chat_diary_update", "engram_vnext_persona_update", "background_task"])
+@pytest.mark.parametrize(
+    "request_name",
+    ["engram_chat_diary_update", "engram_vnext_persona_update", "background_task"],
+)
 @pytest.mark.asyncio
 async def test_private_persona_skips_internal_or_non_actor_requests(
-    reminder_store: SystemReminderStore, monkeypatch: pytest.MonkeyPatch, request_name: str,
+    reminder_store: SystemReminderStore,
+    monkeypatch: pytest.MonkeyPatch,
+    request_name: str,
 ) -> None:
     """内部生成与未接入记忆提醒的请求不会读取人物或改写其输入。"""
     from types import SimpleNamespace
@@ -319,16 +410,27 @@ async def test_private_persona_skips_internal_or_non_actor_requests(
 
     plugin = plugin_module.EngramMemoryPlugin(EngramMemoryConfig())
     lookup, get_stream = AsyncMock(), AsyncMock()
-    plugin.runtime_owner = cast(plugin_module.VNextRuntimeOwner, SimpleNamespace(
-        persona_service=SimpleNamespace(get_persona=lookup),
-    ))
+    plugin.runtime_owner = cast(
+        plugin_module.VNextRuntimeOwner,
+        SimpleNamespace(
+            persona_service=SimpleNamespace(get_persona=lookup),
+        ),
+    )
     monkeypatch.setattr(persona_injection.stream_api, "get_stream_info", get_stream)
     payloads = [LLMPayload(ROLE.USER, Text("独立输入"))]
     if request_name != "background_task":
-        payloads[0].content.append(Text("<system_reminder>\n[engram_memory_guide]\n指引\n</system_reminder>"))
+        payloads[0].content.append(
+            Text("<system_reminder>\n[engram_memory_guide]\n指引\n</system_reminder>")
+        )
     original = list(_text_parts(payloads[0]))
-    params = {"request_name": request_name, "meta_data": {"stream_id": "stream-example"}, "payloads": payloads}
-    await persona_injection.VNextPrivatePersonaEventHandler(plugin).execute(EventType.BEFORE_LLM_REQUEST, params)
+    params = {
+        "request_name": request_name,
+        "meta_data": {"stream_id": "stream-example"},
+        "payloads": payloads,
+    }
+    await persona_injection.VNextPrivatePersonaEventHandler(plugin).execute(
+        EventType.BEFORE_LLM_REQUEST, params
+    )
     assert _text_parts(params["payloads"][0]) == original
     get_stream.assert_not_awaited()
     lookup.assert_not_awaited()
@@ -350,10 +452,13 @@ def test_reminder_payload_is_scoped_to_stream_and_removal_is_local(
         assert any(expected in text for text in _text_parts(request.payloads[-1]))
 
     payloads = [
-        LLMPayload(ROLE.USER, [
-            Text(f"<system_reminder>\n[{REMINDER_NAME}]\n旧\n</system_reminder>"),
-            Text("历史正文中提到 [engram_memory_chat_diary] 但不是独立块"),
-        ]),
+        LLMPayload(
+            ROLE.USER,
+            [
+                Text(f"<system_reminder>\n[{REMINDER_NAME}]\n旧\n</system_reminder>"),
+                Text("历史正文中提到 [engram_memory_chat_diary] 但不是独立块"),
+            ],
+        ),
     ]
     assert refresh_diary_payloads(payloads, "")
     assert _text_parts(payloads[0]) == [
@@ -383,10 +488,10 @@ async def test_events_wake_without_awaiting_generation_and_skip_internal_request
     assert decision is EventDecision.SUCCESS
     assert params["message"] is message
     assert runtime.observed == ["stream-a"]
-    assert runtime.include_tail == []
+    assert runtime.read_streams == []
     await handler.execute(EventType.AFTER_MESSAGE_SENT, {"message": message})
     assert runtime.observed == ["stream-a", "stream-a"]
-    assert runtime.include_tail == []
+    assert runtime.read_streams == []
 
     payloads = [LLMPayload(ROLE.USER, Text("日记生成任务输入"))]
     for request_name in ("engram_chat_diary_update", "engram_vnext_persona_update"):
@@ -401,14 +506,14 @@ async def test_events_wake_without_awaiting_generation_and_skip_internal_request
         assert decision is EventDecision.SUCCESS
         assert output["payloads"] is payloads
         assert _text_parts(payloads[0]) == ["日记生成任务输入"]
-    assert runtime.include_tail == []
+    assert runtime.read_streams == []
 
 
 @pytest.mark.asyncio
 async def test_chatter_step_deletes_reminder_when_runtime_returns_empty(
     reminder_store: SystemReminderStore,
 ) -> None:
-    """关闭或无许可时空内容会清除流私有 reminder。"""
+    """无日记、关闭或无许可时空内容会清除流私有 reminder。"""
     from src.core.components.types import EventType
     from src.kernel.event import EventDecision
 
@@ -426,19 +531,21 @@ async def test_chatter_step_deletes_reminder_when_runtime_returns_empty(
     )
 
     assert decision is EventDecision.SUCCESS
-    assert runtime.include_tail == [False]
+    assert runtime.read_streams == ["stream-a"]
     assert reminder_store.get("stream:stream-a:actor", names=[REMINDER_NAME]) == ""
 
 
+@pytest.mark.parametrize("content", ["当前日记正文", ""])
 @pytest.mark.asyncio
-async def test_before_request_uses_stream_metadata_and_latest_tail(
+async def test_before_request_uses_stream_metadata_and_current_diary(
     reminder_store: SystemReminderStore,
+    content: str,
 ) -> None:
-    """opt-in 请求按 meta_data.stream_id 刷新 payload 并取必要连续原消息。"""
+    """回复前仅保留最新日记，无日记时剥离旧块，正常原消息保持不变。"""
     from src.core.components.types import EventType
     from src.kernel.event import EventDecision
 
-    runtime = _DiaryRuntime("当前日记与游标后原消息")
+    runtime = _DiaryRuntime(content)
     handler = ChatDiaryEventHandler(cast(BasePlugin, _Plugin(runtime)))
     reminder_store.set(
         "stream:stream-a:actor",
@@ -447,6 +554,8 @@ async def test_before_request_uses_stream_metadata_and_latest_tail(
         insert_type="dynamic",
     )
     request = _new_request("stream-a", reminder_store)
+    request.add_payload(LLMPayload(ROLE.USER, Text("前一轮用户原文")))
+    request.add_payload(LLMPayload(ROLE.ASSISTANT, Text("前一轮回复")))
     request.add_payload(LLMPayload(ROLE.USER, Text("本轮用户原文")))
     source_payloads = request.payloads
     event_payloads = list(source_payloads)
@@ -459,12 +568,27 @@ async def test_before_request_uses_stream_metadata_and_latest_tail(
     decision, output = await handler.execute(EventType.BEFORE_LLM_REQUEST, params)
     assert decision is EventDecision.SUCCESS
     assert output["payloads"] is event_payloads
-    assert runtime.include_tail == [True]
+    assert runtime.read_streams == ["stream-a"]
     assert sum(
         text.startswith(f"<system_reminder>\n[{REMINDER_NAME}]\n")
         for payload in event_payloads
         for text in _text_parts(payload)
-    ) == 1
-    assert any("游标后原消息" in text for text in _text_parts(event_payloads[-1]))
+    ) == (1 if content else 0)
+    assert all(
+        REMINDER_NAME not in text
+        for payload in event_payloads[:-1]
+        for text in _text_parts(payload)
+    )
+    texts = [text for payload in event_payloads for text in _text_parts(payload)]
+    assert "前一轮用户原文" in texts
+    assert "前一轮回复" in texts
+    assert "本轮用户原文" in texts
+    assert not any("旧版提醒" in text for text in texts)
+    if content:
+        assert any(content in text for text in _text_parts(event_payloads[-1]))
+    expected = f"[{REMINDER_NAME}]\n{content}" if content else ""
+    assert (
+        reminder_store.get("stream:stream-a:actor", names=[REMINDER_NAME]) == expected
+    )
     assert request.payloads is source_payloads
     assert any("旧版提醒" in text for text in _text_parts(source_payloads[-1]))

@@ -7,10 +7,13 @@ import asyncio
 from src.app.plugin_system.api import log_api
 
 from .domain import MemoryChanged
-from .framework_bridge import ManagedTaskHandle, cancel_managed_task, create_managed_task
+from .framework_bridge import (
+    ManagedTaskHandle,
+    cancel_managed_task,
+    create_managed_task,
+)
 from .persona_service import PersonaService
 from .repository import MemoryRepository
-
 
 logger = log_api.get_logger(
     "engram_memory.vnext.persona_updater",
@@ -51,7 +54,9 @@ class PersonaUpdater:
             raise RuntimeError("PersonaUpdater 已关闭")
         if self._bootstrap is None:
             self._bootstrap = create_managed_task(
-                self._scan_missing(), name="engram_memory_persona_bootstrap", daemon=True,
+                self._scan_missing(),
+                name="engram_memory_persona_bootstrap",
+                daemon=True,
             )
 
     async def enqueue(self, change: MemoryChanged) -> None:
@@ -78,7 +83,9 @@ class PersonaUpdater:
         if self._closed:
             return
         self._wake.set()
-        if self._pending and (self._task is None or self._task.task is None or self._task.task.done()):
+        if self._pending and (
+            self._task is None or self._task.task is None or self._task.task.done()
+        ):
             self._task = create_managed_task(
                 self._run(),
                 name="engram_memory_persona_updater",
@@ -88,12 +95,21 @@ class PersonaUpdater:
     async def close(self) -> None:
         """取消扫描、调度、处理与延迟重试，等待后再释放数据库。"""
         self._closed = True
-        handles = [self._task, self._bootstrap, *self._running.values(), *self._retries.values()]
+        handles = [
+            self._task,
+            self._bootstrap,
+            *self._running.values(),
+            *self._retries.values(),
+        ]
         self._task = None
         current_task = asyncio.current_task()
         tasks = []
         for handle in handles:
-            if handle is not None and handle.task is not None and handle.task is not current_task:
+            if (
+                handle is not None
+                and handle.task is not None
+                and handle.task is not current_task
+            ):
                 if not handle.task.done():
                     cancel_managed_task(handle.task_id)
                 tasks.append(handle.task)
@@ -117,7 +133,11 @@ class PersonaUpdater:
                     if person_id in seen:
                         continue
                     seen.add(person_id)
-                    if person_id in self._pending or person_id in self._running or person_id in self._retries:
+                    if (
+                        person_id in self._pending
+                        or person_id in self._running
+                        or person_id in self._retries
+                    ):
                         continue
                     persona = await self._service.get_persona(person_id)
                     if persona is not None and not persona.impression_text:
@@ -139,14 +159,16 @@ class PersonaUpdater:
                     if len(self._running) >= self._max_concurrency:
                         break
                     if (
-                        person_id in self._running or person_id in self._retries
+                        person_id in self._running
+                        or person_id in self._retries
                         or self._attempts.get(person_id, 0) > 2
                     ):
                         continue
                     batch = tuple(dict.fromkeys(self._pending.pop(person_id)))
                     self._running[person_id] = create_managed_task(
                         self._refresh_person(person_id, batch),
-                        name=f"engram_memory_persona_update_{person_id}", daemon=True,
+                        name=f"engram_memory_persona_update_{person_id}",
+                        daemon=True,
                     )
                 if not self._running:
                     return
@@ -154,7 +176,9 @@ class PersonaUpdater:
         finally:
             self._task = None
 
-    async def _refresh_person(self, person_id: str, batch: tuple[MemoryChanged, ...]) -> None:
+    async def _refresh_person(
+        self, person_id: str, batch: tuple[MemoryChanged, ...]
+    ) -> None:
         """执行一个人物批次，失败或过期时合并回队列并安排有限重试。"""
         try:
             result = await self._service.refresh(person_id, batch)
@@ -171,7 +195,8 @@ class PersonaUpdater:
             if attempt <= 2 and not self._closed:
                 self._retries[person_id] = create_managed_task(
                     self._retry_after(person_id, attempt),
-                    name=f"engram_memory_persona_retry_{person_id}", daemon=True,
+                    name=f"engram_memory_persona_retry_{person_id}",
+                    daemon=True,
                 )
         finally:
             self._running.pop(person_id, None)
@@ -180,7 +205,7 @@ class PersonaUpdater:
     async def _retry_after(self, person_id: str, attempt: int) -> None:
         """在不占用处理名额的延迟后重新唤醒人物任务。"""
         try:
-            await asyncio.sleep(2 ** attempt)
+            await asyncio.sleep(2**attempt)
         finally:
             self._retries.pop(person_id, None)
             self._schedule()

@@ -8,12 +8,12 @@ from datetime import datetime
 from .enums import (
     ActorType,
     EvidenceSourceType,
-    MemoryKind,
-    ParticipantKind,
-    SubjectKind,
-    RevisionChangeReason,
     MemoryEventType,
+    MemoryKind,
     MemoryStatus,
+    ParticipantKind,
+    RevisionChangeReason,
+    SubjectKind,
 )
 
 

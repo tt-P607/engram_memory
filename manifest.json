@@ -27,12 +27,16 @@
   ],
   "entry_point": "plugin.py",
   "api_version": {
+    "adapter_api": "1.0.0",
+    "config_api": "1.1.0",
+    "database_api": "1.0.0",
     "event_api": "1.1.0",
     "llm_api": "1.1.0",
     "stream_api": "1.0.0",
     "message_api": "1.0.0",
     "person_api": "1.0.0",
     "prompt_api": "1.0.0",
+    "router_api": "1.0.0",
     "storage_api": "1.0.0",
     "log_api": "1.0.0"
   },

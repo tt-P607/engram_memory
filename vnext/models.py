@@ -8,7 +8,6 @@ from typing import Any, ClassVar
 from sqlalchemy import (
     JSON,
     CheckConstraint,
-    Enum as SqlEnum,
     Float,
     ForeignKey,
     Index,
@@ -16,9 +15,12 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    func,
     event,
+    func,
     text,
+)
+from sqlalchemy import (
+    Enum as SqlEnum,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
@@ -147,7 +149,8 @@ class MemoryRevisionModel(Base):
     )
     observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     change_reason: Mapped[RevisionChangeReason] = mapped_column(
-        _enum(RevisionChangeReason, "engram_vnext_revision_change_reason"), nullable=False
+        _enum(RevisionChangeReason, "engram_vnext_revision_change_reason"),
+        nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     created_by_type: Mapped[ActorType] = mapped_column(
@@ -156,7 +159,9 @@ class MemoryRevisionModel(Base):
     created_by_ref: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
-        UniqueConstraint("memory_id", "revision_no", name="uq_engram_vnext_revision_no"),
+        UniqueConstraint(
+            "memory_id", "revision_no", name="uq_engram_vnext_revision_no"
+        ),
         CheckConstraint("revision_no >= 1", name="ck_engram_vnext_revision_positive"),
         Index("idx_engram_vnext_revision_memory", "memory_id"),
         Index("idx_engram_vnext_revision_kind", "memory_kind"),
@@ -169,7 +174,9 @@ class MemoryRevisionSubjectModel(Base):
     __tablename__ = "engram_vnext_memory_revision_subject"
 
     revision_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("engram_vnext_memory_revision.revision_id"), primary_key=True
+        String(36),
+        ForeignKey("engram_vnext_memory_revision.revision_id"),
+        primary_key=True,
     )
     subject_kind: Mapped[SubjectKind] = mapped_column(
         _enum(SubjectKind, "engram_vnext_subject_kind"), nullable=False
@@ -194,7 +201,9 @@ class MemoryRevisionParticipantModel(Base):
 
     participant_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     revision_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("engram_vnext_memory_revision.revision_id"), nullable=False
+        String(36),
+        ForeignKey("engram_vnext_memory_revision.revision_id"),
+        nullable=False,
     )
     participant_kind: Mapped[ParticipantKind] = mapped_column(
         _enum(ParticipantKind, "engram_vnext_participant_kind"), nullable=False
@@ -263,7 +272,9 @@ class RevisionEvidenceModel(Base):
     __tablename__ = "engram_vnext_revision_evidence"
 
     revision_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("engram_vnext_memory_revision.revision_id"), primary_key=True
+        String(36),
+        ForeignKey("engram_vnext_memory_revision.revision_id"),
+        primary_key=True,
     )
     evidence_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("engram_vnext_evidence.evidence_id"), primary_key=True
@@ -296,7 +307,8 @@ class MemoryRelationModel(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "source_memory_id != target_memory_id", name="ck_engram_vnext_relation_not_self"
+            "source_memory_id != target_memory_id",
+            name="ck_engram_vnext_relation_not_self",
         ),
         Index("idx_engram_vnext_relation_source", "source_memory_id"),
         Index("idx_engram_vnext_relation_target", "target_memory_id"),
@@ -346,7 +358,9 @@ class CandidateModel(Base):
     )
     last_error: Mapped[str | None] = mapped_column(Text)
 
-    __table_args__ = (Index("idx_engram_vnext_candidate_status", "status", "created_at"),)
+    __table_args__ = (
+        Index("idx_engram_vnext_candidate_status", "status", "created_at"),
+    )
 
 
 class CandidateEvidenceModel(Base):
@@ -395,7 +409,8 @@ class CandidateParticipantModel(Base):
         String(36), ForeignKey("engram_vnext_candidate.candidate_id"), nullable=False
     )
     participant_kind: Mapped[ParticipantKind] = mapped_column(
-        _enum(ParticipantKind, "engram_vnext_candidate_participant_kind"), nullable=False
+        _enum(ParticipantKind, "engram_vnext_candidate_participant_kind"),
+        nullable=False,
     )
     person_id: Mapped[str | None] = mapped_column(Text)
     label: Mapped[str | None] = mapped_column(Text)
@@ -415,7 +430,9 @@ class CandidateEncoderCursorModel(Base):
     __tablename__ = "engram_vnext_candidate_encoder_cursor"
 
     stream_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    last_processed_message_time: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    last_processed_message_time: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False
+    )
     last_processed_message_id: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
@@ -440,7 +457,9 @@ class SleepSessionModel(Base):
     error_summary: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
-        CheckConstraint("candidate_count >= 0", name="ck_engram_vnext_sleep_candidate_count"),
+        CheckConstraint(
+            "candidate_count >= 0", name="ck_engram_vnext_sleep_candidate_count"
+        ),
         Index("idx_engram_vnext_sleep_status", "status", "started_at"),
     )
 
@@ -455,7 +474,9 @@ class CandidateActionModel(Base):
         String(36), ForeignKey("engram_vnext_candidate.candidate_id"), nullable=False
     )
     sleep_session_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("engram_vnext_sleep_session.sleep_session_id"), nullable=False
+        String(36),
+        ForeignKey("engram_vnext_sleep_session.sleep_session_id"),
+        nullable=False,
     )
     action_type: Mapped[CandidateActionType] = mapped_column(
         _enum(CandidateActionType, "engram_vnext_candidate_action_type"), nullable=False
@@ -479,10 +500,13 @@ class SleepActionOperationModel(Base):
         String(36), ForeignKey("engram_vnext_candidate.candidate_id"), nullable=False
     )
     sleep_session_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("engram_vnext_sleep_session.sleep_session_id"), nullable=False
+        String(36),
+        ForeignKey("engram_vnext_sleep_session.sleep_session_id"),
+        nullable=False,
     )
     action_type: Mapped[CandidateActionType] = mapped_column(
-        _enum(CandidateActionType, "engram_vnext_sleep_operation_action_type"), nullable=False
+        _enum(CandidateActionType, "engram_vnext_sleep_operation_action_type"),
+        nullable=False,
     )
     intent_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -502,7 +526,9 @@ class SleepActionOperationModel(Base):
             "status",
             "updated_at",
         ),
-        Index("idx_engram_vnext_sleep_operation_candidate", "candidate_id", "created_at"),
+        Index(
+            "idx_engram_vnext_sleep_operation_candidate", "candidate_id", "created_at"
+        ),
     )
 
 
@@ -516,7 +542,9 @@ class SleepActionPlanModel(Base):
         String(36), ForeignKey("engram_vnext_candidate.candidate_id"), nullable=False
     )
     sleep_session_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("engram_vnext_sleep_session.sleep_session_id"), nullable=False
+        String(36),
+        ForeignKey("engram_vnext_sleep_session.sleep_session_id"),
+        nullable=False,
     )
     intents_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
     operation_keys_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
@@ -552,13 +580,16 @@ class CandidateActionTargetModel(Base):
     __tablename__ = "engram_vnext_candidate_action_target"
 
     action_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("engram_vnext_candidate_action.action_id"), primary_key=True
+        String(36),
+        ForeignKey("engram_vnext_candidate_action.action_id"),
+        primary_key=True,
     )
     memory_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("engram_vnext_memory.memory_id"), primary_key=True
     )
     target_role: Mapped[CandidateActionTargetRole] = mapped_column(
-        _enum(CandidateActionTargetRole, "engram_vnext_candidate_target_role"), primary_key=True
+        _enum(CandidateActionTargetRole, "engram_vnext_candidate_target_role"),
+        primary_key=True,
     )
 
 
@@ -568,7 +599,9 @@ class SleepSessionCandidateModel(Base):
     __tablename__ = "engram_vnext_sleep_session_candidate"
 
     sleep_session_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("engram_vnext_sleep_session.sleep_session_id"), primary_key=True
+        String(36),
+        ForeignKey("engram_vnext_sleep_session.sleep_session_id"),
+        primary_key=True,
     )
     candidate_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("engram_vnext_candidate.candidate_id"), primary_key=True
@@ -640,13 +673,18 @@ class PersonaUpdateLogModel(Base):
     generator_version: Mapped[str | None] = mapped_column(Text)
     revision_no: Mapped[int | None] = mapped_column(Integer)
     impression_text: Mapped[str | None] = mapped_column(Text)
+    seen_revision_ids: Mapped[list[str] | None] = mapped_column(JSON)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
     __table_args__ = (
         Index("idx_engram_vnext_persona_log_person", "person_id", "created_at"),
-        Index("uq_engram_vnext_persona_revision", "person_id", "revision_no", unique=True),
-        CheckConstraint("revision_no >= 1", name="ck_engram_vnext_persona_revision_positive"),
+        Index(
+            "uq_engram_vnext_persona_revision", "person_id", "revision_no", unique=True
+        ),
+        CheckConstraint(
+            "revision_no >= 1", name="ck_engram_vnext_persona_revision_positive"
+        ),
     )
 
 
@@ -656,7 +694,9 @@ class PersonaUpdateMemoryModel(Base):
     __tablename__ = "engram_vnext_persona_update_memory"
 
     update_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("engram_vnext_persona_update_log.update_id"), primary_key=True
+        String(36),
+        ForeignKey("engram_vnext_persona_update_log.update_id"),
+        primary_key=True,
     )
     memory_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("engram_vnext_memory.memory_id"), primary_key=True
@@ -719,9 +759,13 @@ class VectorOutboxModel(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
     __table_args__ = (
-        CheckConstraint("attempt_count >= 0", name="ck_engram_vnext_outbox_attempt_count"),
+        CheckConstraint(
+            "attempt_count >= 0", name="ck_engram_vnext_outbox_attempt_count"
+        ),
         Index("idx_engram_vnext_outbox_status", "status", "updated_at"),
-        Index("idx_engram_vnext_outbox_index_status", "index_id", "status", "updated_at"),
+        Index(
+            "idx_engram_vnext_outbox_index_status", "index_id", "status", "updated_at"
+        ),
     )
 
 

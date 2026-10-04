@@ -8,9 +8,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from collections import defaultdict
 from uuid import uuid4
 
 from sqlalchemy import and_, select
@@ -181,9 +181,7 @@ class FlashbackService:
                     continue
                 title = str(row.title or "").strip()
                 content = str(row.content or "").strip()
-                current_brief = (
-                    f"{title}: {content[:160]}" if content else title
-                )
+                current_brief = f"{title}: {content[:160]}" if content else title
                 candidates[row.memory_id] = FlashbackCandidate(
                     memory_id=row.memory_id,
                     title=title,
@@ -206,12 +204,12 @@ class FlashbackService:
                     )
                 ).all()
             )
-        turn_indexes = tuple(
-            payload.get("turn_index")
-            for payload in rows
-            if isinstance(payload, dict)
-            and isinstance(payload.get("turn_index"), int)
-        )
+        turn_indexes: list[int] = []
+        for payload in rows:
+            if isinstance(payload, dict):
+                turn_index = payload.get("turn_index")
+                if isinstance(turn_index, int):
+                    turn_indexes.append(turn_index)
         return max(turn_indexes, default=-1) + 1
 
     async def flashback(
@@ -235,6 +233,7 @@ class FlashbackService:
         """
         if not enabled or self._max_memories == 0:
             return ()
+
         async def run_within_budget() -> tuple[FlashbackCandidate, ...]:
             """在同一耗时预算内读取阈值、冷却记录并完成检索。"""
             threshold = await self.active_threshold()
@@ -252,6 +251,7 @@ class FlashbackService:
                 turn_index,
                 record_exposure,
             )
+
         async def locked_run() -> tuple[FlashbackCandidate, ...]:
             """按会话串行读取冷却记录与写入暴露事件。"""
             async with self._stream_locks[stream_key]:
@@ -292,7 +292,11 @@ class FlashbackService:
         if not gated:
             return ()
         gated.sort(
-            key=lambda item: (-float(item.vector_similarity or 0.0), -item.rrf_score, item.memory_id)
+            key=lambda item: (
+                -float(item.vector_similarity or 0.0),
+                -item.rrf_score,
+                item.memory_id,
+            )
         )
         selected = gated[: self._max_memories]
         now = datetime.now(UTC)
@@ -392,9 +396,12 @@ class FlashbackService:
             rows = tuple(
                 (
                     await session.execute(
-                        select(MemoryEventModel.memory_id, MemoryEventModel.payload_json)
+                        select(
+                            MemoryEventModel.memory_id, MemoryEventModel.payload_json
+                        )
                         .where(
-                            MemoryEventModel.event_type == MemoryEventType.FLASHBACK_EXPOSED,
+                            MemoryEventModel.event_type
+                            == MemoryEventType.FLASHBACK_EXPOSED,
                             MemoryEventModel.stream_id == stream_key,
                         )
                         .order_by(MemoryEventModel.occurred_at.desc())
@@ -407,7 +414,9 @@ class FlashbackService:
         excluded: set[str] = set()
         for row in rows:
             payload = row.payload_json
-            event_turn = payload.get("turn_index") if isinstance(payload, dict) else None
+            event_turn = (
+                payload.get("turn_index") if isinstance(payload, dict) else None
+            )
             delta = turn_index - event_turn if isinstance(event_turn, int) else None
             if delta is not None and 0 <= delta < self._cooldown_turns:
                 excluded.add(row.memory_id)
@@ -432,6 +441,8 @@ class FlashbackService:
                     actor_ref=None,
                     stream_id=stream_key,
                     occurred_at=now,
-                    payload_json={"turn_index": turn_index} if turn_index is not None else None,
+                    payload_json={"turn_index": turn_index}
+                    if turn_index is not None
+                    else None,
                 )
             )

@@ -15,14 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .domain import (
     CreateMemoryInput,
     EvidenceInput,
-    MemoryLifecycleInput,
     MemoryChanged,
+    MemoryLifecycleInput,
     MemoryWriteResult,
     ReinforceMemoryInput,
     ReviseMemoryInput,
     WriteContext,
 )
-from .evidence_service import EvidenceService
 from .enums import (
     ActorType,
     MemoryEventType,
@@ -33,6 +32,7 @@ from .enums import (
     RetrievalEntryType,
     RevisionChangeReason,
 )
+from .evidence_service import EvidenceService
 from .models import (
     DomainOperationModel,
     EvidenceMessageLinkModel,
@@ -84,18 +84,25 @@ class MemoryService:
             await self._on_memory_changed(change)
 
     @staticmethod
-    def _input_person_ids(data: CreateMemoryInput | ReviseMemoryInput) -> tuple[str, ...]:
+    def _input_person_ids(
+        data: CreateMemoryInput | ReviseMemoryInput,
+    ) -> tuple[str, ...]:
         """读取写入数据中的主要人物和次要人物。"""
-        return tuple(dict.fromkeys(
-            person_id for person_id in (
-                data.subject.person_id,
-                *(participant.person_id for participant in data.participants),
-            ) if person_id
-        ))
+        return tuple(
+            dict.fromkeys(
+                person_id
+                for person_id in (
+                    data.subject.person_id,
+                    *(participant.person_id for participant in data.participants),
+                )
+                if person_id
+            )
+        )
 
     @staticmethod
     async def _revision_person_ids(
-        session: AsyncSession, revision_id: str,
+        session: AsyncSession,
+        revision_id: str,
     ) -> tuple[str, ...]:
         """读取指定版本的人物关联，不依赖记忆当前状态。"""
         subject = await session.get(MemoryRevisionSubjectModel, revision_id)
@@ -104,11 +111,16 @@ class MemoryService:
                 MemoryRevisionParticipantModel.revision_id == revision_id,
             )
         )
-        return tuple(dict.fromkeys(
-            person_id for person_id in (
-                subject.person_id if subject is not None else None, *participants.all(),
-            ) if person_id
-        ))
+        return tuple(
+            dict.fromkeys(
+                person_id
+                for person_id in (
+                    subject.person_id if subject is not None else None,
+                    *participants.all(),
+                )
+                if person_id
+            )
+        )
 
     async def prepare_evidence(
         self, evidence: tuple[EvidenceInput, ...]
@@ -210,7 +222,9 @@ class MemoryService:
                 return MemoryWriteResult(
                     memory_id=str(existing_result["memory_id"]),
                     revision_id=str(existing_result["revision_id"]),
-                    evidence_ids=tuple(str(item) for item in existing_result.get("evidence_ids", ())),
+                    evidence_ids=tuple(
+                        str(item) for item in existing_result.get("evidence_ids", ())
+                    ),
                 )
             session.add_all([memory, revision, subject])
             for participant in data.participants:
@@ -265,13 +279,15 @@ class MemoryService:
                 },
             )
 
-        await self._notify_change(MemoryChanged(
-            memory_id=memory_id,
-            change_type=MemoryEventType.CREATED,
-            after_person_ids=self._input_person_ids(data),
-            after_revision_id=revision_id,
-            after_status=MemoryStatus.ACTIVE,
-        ))
+        await self._notify_change(
+            MemoryChanged(
+                memory_id=memory_id,
+                change_type=MemoryEventType.CREATED,
+                after_person_ids=self._input_person_ids(data),
+                after_revision_id=revision_id,
+                after_status=MemoryStatus.ACTIVE,
+            )
+        )
         return MemoryWriteResult(
             memory_id=memory_id,
             revision_id=revision_id,
@@ -302,7 +318,9 @@ class MemoryService:
                 )
             memory = await self._get_writable_memory(session, data.memory_id)
             self._validate_current_revision(memory, data.based_on_revision_id)
-            person_ids = await self._revision_person_ids(session, memory.current_revision_id)
+            person_ids = await self._revision_person_ids(
+                session, memory.current_revision_id
+            )
             claim_result = await session.execute(
                 update(MemoryModel)
                 .where(
@@ -351,14 +369,18 @@ class MemoryService:
                     "evidence_ids": list(evidence_ids),
                 },
             )
-        await self._notify_change(MemoryChanged(
-            memory_id=data.memory_id,
-            change_type=MemoryEventType.REINFORCED,
-            before_person_ids=person_ids, after_person_ids=person_ids,
-            before_revision_id=data.based_on_revision_id,
-            after_revision_id=data.based_on_revision_id,
-            before_status=MemoryStatus.ACTIVE, after_status=MemoryStatus.ACTIVE,
-        ))
+        await self._notify_change(
+            MemoryChanged(
+                memory_id=data.memory_id,
+                change_type=MemoryEventType.REINFORCED,
+                before_person_ids=person_ids,
+                after_person_ids=person_ids,
+                before_revision_id=data.based_on_revision_id,
+                after_revision_id=data.based_on_revision_id,
+                before_status=MemoryStatus.ACTIVE,
+                after_status=MemoryStatus.ACTIVE,
+            )
+        )
         return MemoryWriteResult(
             memory_id=data.memory_id,
             revision_id=data.based_on_revision_id,
@@ -423,7 +445,8 @@ class MemoryService:
             if current_revision.memory_id != data.memory_id:
                 raise ValueError("当前 Revision 不属于目标 Memory")
             before_person_ids = await self._revision_person_ids(
-                session, current_revision.revision_id,
+                session,
+                current_revision.revision_id,
             )
             session.add(
                 MemoryRevisionModel(
@@ -514,15 +537,18 @@ class MemoryService:
                     "evidence_ids": list(evidence_ids),
                 },
             )
-        await self._notify_change(MemoryChanged(
-            memory_id=data.memory_id,
-            change_type=MemoryEventType.REVISED,
-            before_person_ids=before_person_ids,
-            after_person_ids=self._input_person_ids(data),
-            before_revision_id=data.based_on_revision_id,
-            after_revision_id=revision_id,
-            before_status=MemoryStatus.ACTIVE, after_status=MemoryStatus.ACTIVE,
-        ))
+        await self._notify_change(
+            MemoryChanged(
+                memory_id=data.memory_id,
+                change_type=MemoryEventType.REVISED,
+                before_person_ids=before_person_ids,
+                after_person_ids=self._input_person_ids(data),
+                before_revision_id=data.based_on_revision_id,
+                after_revision_id=revision_id,
+                before_status=MemoryStatus.ACTIVE,
+                after_status=MemoryStatus.ACTIVE,
+            )
+        )
         return MemoryWriteResult(
             memory_id=data.memory_id,
             revision_id=revision_id,
@@ -542,7 +568,9 @@ class MemoryService:
         evidence = await self.prepare_evidence(evidence)
         now = datetime.now(UTC)
         async with self._schema.database.session() as session:
-            existing = await self._claim_domain_operation(session, context.operation_key, "TOMBSTONE")
+            existing = await self._claim_domain_operation(
+                session, context.operation_key, "TOMBSTONE"
+            )
             if existing is not None:
                 return
             memory = await session.get(MemoryModel, data.memory_id)
@@ -551,12 +579,18 @@ class MemoryService:
             if memory.status is MemoryStatus.TOMBSTONED:
                 raise ValueError("Memory 已经是 TOMBSTONED")
             previous_status = memory.status
-            person_ids = await self._revision_person_ids(session, memory.current_revision_id)
+            person_ids = await self._revision_person_ids(
+                session, memory.current_revision_id
+            )
             revision_id = memory.current_revision_id
             evidence_ids: tuple[str, ...] = ()
             if evidence:
                 evidence_ids, _ = await self._attach_evidence(
-                    session, revision_id, evidence, (), now,
+                    session,
+                    revision_id,
+                    evidence,
+                    (),
+                    now,
                 )
             memory.status = MemoryStatus.TOMBSTONED
             memory.updated_at = now
@@ -595,16 +629,26 @@ class MemoryService:
                     },
                 )
             )
-            await self._complete_domain_operation(session, context.operation_key, {
-                "memory_id": memory.memory_id, "revision_id": revision_id,
-            })
+            await self._complete_domain_operation(
+                session,
+                context.operation_key,
+                {
+                    "memory_id": memory.memory_id,
+                    "revision_id": revision_id,
+                },
+            )
 
-        await self._notify_change(MemoryChanged(
-            memory_id=data.memory_id, change_type=MemoryEventType.TOMBSTONED,
-            before_person_ids=person_ids, before_revision_id=revision_id,
-            after_revision_id=revision_id,
-            before_status=previous_status, after_status=MemoryStatus.TOMBSTONED,
-        ))
+        await self._notify_change(
+            MemoryChanged(
+                memory_id=data.memory_id,
+                change_type=MemoryEventType.TOMBSTONED,
+                before_person_ids=person_ids,
+                before_revision_id=revision_id,
+                after_revision_id=revision_id,
+                before_status=previous_status,
+                after_status=MemoryStatus.TOMBSTONED,
+            )
+        )
 
     async def restore_memory(
         self,
@@ -628,7 +672,10 @@ class MemoryService:
                         MemoryEventModel.memory_id == memory.memory_id,
                         MemoryEventModel.event_type == MemoryEventType.TOMBSTONED,
                     )
-                    .order_by(MemoryEventModel.occurred_at.desc(), MemoryEventModel.event_id.desc())
+                    .order_by(
+                        MemoryEventModel.occurred_at.desc(),
+                        MemoryEventModel.event_id.desc(),
+                    )
                 )
             ).first()
             previous_status = MemoryStatus.ACTIVE
@@ -637,7 +684,9 @@ class MemoryService:
                 if raw_status in {status.value for status in MemoryStatus}:
                     previous_status = MemoryStatus(raw_status)
             memory.status = previous_status
-            person_ids = await self._revision_person_ids(session, memory.current_revision_id)
+            person_ids = await self._revision_person_ids(
+                session, memory.current_revision_id
+            )
             revision_id = memory.current_revision_id
             memory.updated_at = now
             entries = list(
@@ -667,16 +716,24 @@ class MemoryService:
                     actor_ref=context.actor_ref,
                     stream_id=context.stream_id,
                     occurred_at=now,
-                    payload_json={"restored_status": previous_status.value, "reason": data.reason},
+                    payload_json={
+                        "restored_status": previous_status.value,
+                        "reason": data.reason,
+                    },
                 )
             )
 
-        await self._notify_change(MemoryChanged(
-            memory_id=data.memory_id, change_type=MemoryEventType.RESTORED,
-            after_person_ids=person_ids, before_revision_id=revision_id,
-            after_revision_id=revision_id,
-            before_status=MemoryStatus.TOMBSTONED, after_status=previous_status,
-        ))
+        await self._notify_change(
+            MemoryChanged(
+                memory_id=data.memory_id,
+                change_type=MemoryEventType.RESTORED,
+                after_person_ids=person_ids,
+                before_revision_id=revision_id,
+                after_revision_id=revision_id,
+                before_status=MemoryStatus.TOMBSTONED,
+                after_status=previous_status,
+            )
+        )
 
     @staticmethod
     def _require_lifecycle_writer(context: WriteContext) -> None:
@@ -698,7 +755,9 @@ class MemoryService:
         return memory
 
     @staticmethod
-    def _validate_current_revision(memory: MemoryModel, based_on_revision_id: str) -> None:
+    def _validate_current_revision(
+        memory: MemoryModel, based_on_revision_id: str
+    ) -> None:
         """拒绝基于旧版本的并发写入。"""
         if memory.current_revision_id != based_on_revision_id:
             raise ValueError("based_on_revision_id 不是当前 Revision")
@@ -752,12 +811,16 @@ class MemoryService:
                 await session.flush()
 
         all_ids = new_ids + existing_evidence_ids
-        linked_ids = set((await session.scalars(
-            select(RevisionEvidenceModel.evidence_id).where(
-                RevisionEvidenceModel.revision_id == revision_id,
-                RevisionEvidenceModel.evidence_id.in_(all_ids),
-            )
-        )).all())
+        linked_ids = set(
+            (
+                await session.scalars(
+                    select(RevisionEvidenceModel.evidence_id).where(
+                        RevisionEvidenceModel.revision_id == revision_id,
+                        RevisionEvidenceModel.evidence_id.in_(all_ids),
+                    )
+                )
+            ).all()
+        )
         for evidence_id in all_ids:
             if evidence_id in linked_ids:
                 continue

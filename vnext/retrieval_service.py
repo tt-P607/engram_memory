@@ -95,7 +95,9 @@ class LexicalIndex:
                     counts[entry_id] += 1
         return tuple(
             entry_id
-            for entry_id, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+            for entry_id, _ in sorted(
+                counts.items(), key=lambda item: (-item[1], item[0])
+            )
         )
 
 
@@ -334,7 +336,9 @@ class RetrievalService:
                         )
                         .where(
                             MemoryModel.memory_id.in_(memory_ids),
-                            MemoryRevisionSubjectModel.person_id.in_(selected_person_ids),
+                            MemoryRevisionSubjectModel.person_id.in_(
+                                selected_person_ids
+                            ),
                         )
                     )
                 ).all()
@@ -350,7 +354,9 @@ class RetrievalService:
                         )
                         .where(
                             MemoryModel.memory_id.in_(memory_ids),
-                            MemoryRevisionParticipantModel.person_id.in_(selected_person_ids),
+                            MemoryRevisionParticipantModel.person_id.in_(
+                                selected_person_ids
+                            ),
                         )
                     )
                 ).all()
@@ -383,13 +389,9 @@ class RetrievalService:
             if query.end_time is not None and reference > query.end_time:
                 continue
             qualified.add(row.memory_id)
-        return {
-            entry.entry_id for entry in candidates if entry.memory_id in qualified
-        }
+        return {entry.entry_id for entry in candidates if entry.memory_id in qualified}
 
-    async def _resolve_person_ids(
-        self, person_ids: tuple[str, ...]
-    ) -> tuple[str, ...]:
+    async def _resolve_person_ids(self, person_ids: tuple[str, ...]) -> tuple[str, ...]:
         """结构化人物过滤前，展开已保存快照中的人物别名并去重。"""
         resolved: list[str] = []
         for person_id in person_ids:
@@ -405,7 +407,10 @@ class RetrievalService:
             (
                 await session.scalars(
                     select(MemoryRetrievalEntryModel)
-                    .join(MemoryModel, MemoryModel.memory_id == MemoryRetrievalEntryModel.memory_id)
+                    .join(
+                        MemoryModel,
+                        MemoryModel.memory_id == MemoryRetrievalEntryModel.memory_id,
+                    )
                     .where(MemoryModel.status == MemoryStatus.ACTIVE)
                 )
             ).all()
@@ -421,17 +426,20 @@ class RetrievalService:
         if not memory_ids:
             return {}
         rows = tuple(
-            (await session.execute(
-                select(MemoryModel.memory_id, MemoryRevisionModel.title)
-                .join(
-                    MemoryRevisionModel,
-                    MemoryRevisionModel.revision_id == MemoryModel.current_revision_id,
+            (
+                await session.execute(
+                    select(MemoryModel.memory_id, MemoryRevisionModel.title)
+                    .join(
+                        MemoryRevisionModel,
+                        MemoryRevisionModel.revision_id
+                        == MemoryModel.current_revision_id,
+                    )
+                    .where(
+                        MemoryModel.memory_id.in_(memory_ids),
+                        MemoryModel.status == MemoryStatus.ACTIVE,
+                    )
                 )
-                .where(
-                    MemoryModel.memory_id.in_(memory_ids),
-                    MemoryModel.status == MemoryStatus.ACTIVE,
-                )
-            )).all()
+            ).all()
         )
         return {row.memory_id: row.title for row in rows}
 
@@ -452,8 +460,12 @@ class RetrievalService:
         同一 Memory 的多个入口命中只返回一个 memory_id，
         全部命中来源列进 matched_by（含 STRUCTURED）。
         """
-        lexical_positions = {entry_id: rank for rank, entry_id in enumerate(lexical_ranks)}
-        vector_positions = {entry_id: rank for rank, entry_id in enumerate(vector_ranks)}
+        lexical_positions = {
+            entry_id: rank for rank, entry_id in enumerate(lexical_ranks)
+        }
+        vector_positions = {
+            entry_id: rank for rank, entry_id in enumerate(vector_ranks)
+        }
         memory_scores: dict[str, float] = defaultdict(float)
         memory_sources: dict[str, set[str]] = defaultdict(set)
         memory_similarities: dict[str, float] = {}
@@ -548,8 +560,7 @@ class RetrievalService:
         rows = tuple(
             (
                 await session.scalars(
-                    select(MemoryModel)
-                    .where(MemoryModel.memory_id.in_(memory_ids))
+                    select(MemoryModel).where(MemoryModel.memory_id.in_(memory_ids))
                 )
             ).all()
         )

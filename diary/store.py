@@ -86,24 +86,46 @@ class DiaryStore:
         """读取已保存的处理边界。"""
         async with self.database.session() as session:
             row = await session.get(StreamProgress, stream_id)
-            return Progress(
-                row.stream_id, row.chat_type, row.cursor_id, row.start_time,
-                row.bootstrap_through, row.initialized_at, row.last_success_at,
-                row.cursor_message_id,
-            ) if row is not None else None
+            return (
+                Progress(
+                    row.stream_id,
+                    row.chat_type,
+                    row.cursor_id,
+                    row.start_time,
+                    row.bootstrap_through,
+                    row.initialized_at,
+                    row.last_success_at,
+                    row.cursor_message_id,
+                )
+                if row is not None
+                else None
+            )
 
     async def ensure_stream(
-        self, stream_id: str, chat_type: str, *, start_time: float,
-        bootstrap_through: int, now: float,
+        self,
+        stream_id: str,
+        chat_type: str,
+        *,
+        start_time: float,
+        bootstrap_through: int,
+        now: float,
     ) -> Progress:
         """仅首次保存回填起点与上界，重启不会重新设置已有进度。"""
         async with self.database.session() as session:
-            await session.execute(insert(StreamProgress).values(
-                stream_id=stream_id, chat_type=chat_type, cursor_id=0,
-                start_time=start_time, bootstrap_through=bootstrap_through,
-                initialized_at=now, last_success_at=None,
-                cursor_message_id="",
-            ).on_conflict_do_nothing(index_elements=["stream_id"]))
+            await session.execute(
+                insert(StreamProgress)
+                .values(
+                    stream_id=stream_id,
+                    chat_type=chat_type,
+                    cursor_id=0,
+                    start_time=start_time,
+                    bootstrap_through=bootstrap_through,
+                    initialized_at=now,
+                    last_success_at=None,
+                    cursor_message_id="",
+                )
+                .on_conflict_do_nothing(index_elements=["stream_id"])
+            )
         result = await self.progress(stream_id)
         if result is None or result.chat_type != chat_type:
             raise RuntimeError("日记流身份或聊天类型不一致")
@@ -113,35 +135,70 @@ class DiaryStore:
         """读取已有流，供启动恢复使用。"""
         async with self.database.session() as session:
             rows = (await session.scalars(select(StreamProgress))).all()
-            return tuple(Progress(
-                row.stream_id, row.chat_type, row.cursor_id, row.start_time,
-                row.bootstrap_through, row.initialized_at, row.last_success_at,
-                row.cursor_message_id,
-            ) for row in rows)
+            return tuple(
+                Progress(
+                    row.stream_id,
+                    row.chat_type,
+                    row.cursor_id,
+                    row.start_time,
+                    row.bootstrap_through,
+                    row.initialized_at,
+                    row.last_success_at,
+                    row.cursor_message_id,
+                )
+                for row in rows
+            )
 
     async def diaries(self, stream_id: str, since_day: str) -> tuple[Diary, ...]:
         """仅取指定流的日期范围，不按篇数向更早日期补齐。"""
         async with self.database.session() as session:
-            rows = (await session.scalars(select(DailyDiary).where(
-                DailyDiary.stream_id == stream_id, DailyDiary.day >= since_day,
-            ).order_by(DailyDiary.day))).all()
-            return tuple(Diary(
-                row.stream_id, row.day, row.body, row.through_id,
-                row.through_time, row.updated_at,
-            ) for row in rows)
+            rows = (
+                await session.scalars(
+                    select(DailyDiary)
+                    .where(
+                        DailyDiary.stream_id == stream_id,
+                        DailyDiary.day >= since_day,
+                    )
+                    .order_by(DailyDiary.day)
+                )
+            ).all()
+            return tuple(
+                Diary(
+                    row.stream_id,
+                    row.day,
+                    row.body,
+                    row.through_id,
+                    row.through_time,
+                    row.updated_at,
+                )
+                for row in rows
+            )
 
     async def get_day(self, stream_id: str, day: str) -> Diary | None:
         """读取当天底稿，不把其他日期当成可重写正文。"""
         async with self.database.session() as session:
             row = await session.get(DailyDiary, (stream_id, day))
-            return Diary(
-                row.stream_id, row.day, row.body, row.through_id,
-                row.through_time, row.updated_at,
-            ) if row is not None else None
+            return (
+                Diary(
+                    row.stream_id,
+                    row.day,
+                    row.body,
+                    row.through_id,
+                    row.through_time,
+                    row.updated_at,
+                )
+                if row is not None
+                else None
+            )
 
     async def commit_batch(
-        self, progress: Progress, *, through_id: int, now: float,
-        diary: Diary | None, message_id: str = "",
+        self,
+        progress: Progress,
+        *,
+        through_id: int,
+        now: float,
+        diary: Diary | None,
+        message_id: str = "",
     ) -> None:
         """比较原位置后同时替换正文和推进游标，异常会整批回滚。"""
         if through_id <= progress.cursor_id:
@@ -151,18 +208,34 @@ class DiaryStore:
         ):
             raise ValueError("日记正文和处理位置不属于同一批次")
         async with self.database.session() as session:
-            result = await session.execute(update(StreamProgress).where(
-                StreamProgress.stream_id == progress.stream_id,
-                StreamProgress.cursor_id == progress.cursor_id,
-            ).values(cursor_id=through_id, cursor_message_id=message_id, last_success_at=now))
+            result = await session.execute(
+                update(StreamProgress)
+                .where(
+                    StreamProgress.stream_id == progress.stream_id,
+                    StreamProgress.cursor_id == progress.cursor_id,
+                )
+                .values(
+                    cursor_id=through_id,
+                    cursor_message_id=message_id,
+                    last_success_at=now,
+                )
+            )
             if result.rowcount != 1:
                 raise RuntimeError("日记处理位置已变化，拒绝过期结果")
             if diary is not None:
                 values = {
-                    "stream_id": diary.stream_id, "day": diary.day, "body": diary.body,
-                    "through_id": diary.through_id, "through_time": diary.through_time,
+                    "stream_id": diary.stream_id,
+                    "day": diary.day,
+                    "body": diary.body,
+                    "through_id": diary.through_id,
+                    "through_time": diary.through_time,
                     "updated_at": now,
                 }
-                await session.execute(insert(DailyDiary).values(**values).on_conflict_do_update(
-                    index_elements=["stream_id", "day"], set_=values,
-                ))
+                await session.execute(
+                    insert(DailyDiary)
+                    .values(**values)
+                    .on_conflict_do_update(
+                        index_elements=["stream_id", "day"],
+                        set_=values,
+                    )
+                )

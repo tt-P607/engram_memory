@@ -38,7 +38,6 @@ from .models import (
 from .schema import VNextSchema
 from .vector_service import VectorIndexService
 
-
 _ModelT = TypeVar("_ModelT")
 
 _CORE_ENTRY_TYPES = frozenset(
@@ -204,9 +203,7 @@ class DoctorService:
         async with self._schema.database.session() as session:
             snapshot = await self._load_snapshot(session)
             memories = {row.memory_id: row for row in snapshot.memories}
-            revisions_by_id = {
-                row.revision_id: row for row in snapshot.revisions
-            }
+            revisions_by_id = {row.revision_id: row for row in snapshot.revisions}
             revisions_by_memory = _revisions_by_memory(snapshot.revisions)
             current_by_memory = {
                 memory_id: _owned_revision(
@@ -271,13 +268,17 @@ class DoctorService:
                     await session.scalars(
                         select(VectorOutboxModel)
                         .where(VectorOutboxModel.status == OutboxStatus.FAILED)
-                        .order_by(VectorOutboxModel.updated_at, VectorOutboxModel.outbox_id)
+                        .order_by(
+                            VectorOutboxModel.updated_at, VectorOutboxModel.outbox_id
+                        )
                     )
                 ).all()
             )
             entries = {
                 entry.entry_id: entry
-                for entry in (await session.scalars(select(MemoryRetrievalEntryModel))).all()
+                for entry in (
+                    await session.scalars(select(MemoryRetrievalEntryModel))
+                ).all()
             }
             now = datetime.now(UTC)
             for outbox in failed:
@@ -301,7 +302,9 @@ class DoctorService:
             return ()
         succeeded = await self._process_selected_outbox(selected_outbox_ids)
         selected = set(selected_entry_ids)
-        return _unique_strings(entry_id for entry_id in succeeded if entry_id in selected)
+        return _unique_strings(
+            entry_id for entry_id in succeeded if entry_id in selected
+        )
 
     async def _check_physical_vector(
         self,
@@ -329,7 +332,9 @@ class DoctorService:
                 )
             ]
         active_memory_ids = {
-            row.memory_id for row in snapshot.memories if row.status is MemoryStatus.ACTIVE
+            row.memory_id
+            for row in snapshot.memories
+            if row.status is MemoryStatus.ACTIVE
         }
         expected_ids = {
             row.entry_id
@@ -374,9 +379,7 @@ class DoctorService:
         issues.extend(_check_evidence_snapshots(snapshot))
         issues.extend(_check_merge_cycles(snapshot))
         issues.extend(_check_retrieval_entries(snapshot))
-        issues.extend(
-            _check_outbox(snapshot, self._embedding_model_id)
-        )
+        issues.extend(_check_outbox(snapshot, self._embedding_model_id))
         issues.extend(_check_manifests(snapshot, self._manifest_parameters()))
         return issues
 
@@ -501,7 +504,9 @@ class DoctorService:
             active.content_hash = entry.content_hash
             active.embedding_model_id = self._embedding_model_id
             if active.status is not OutboxStatus.PROCESSING:
-                active.last_error = None if active.status is OutboxStatus.PENDING else active.last_error
+                active.last_error = (
+                    None if active.status is OutboxStatus.PENDING else active.last_error
+                )
             active.updated_at = datetime.now(UTC)
             return
         now = datetime.now(UTC)
@@ -548,11 +553,7 @@ class DoctorService:
     ) -> None:
         """清理目标已不存在且已完成投递的派生 Outbox 行。"""
         entry_ids = set(
-            (
-                await session.scalars(
-                    select(MemoryRetrievalEntryModel.entry_id)
-                )
-            ).all()
+            (await session.scalars(select(MemoryRetrievalEntryModel.entry_id))).all()
         )
         rows = tuple(
             (
@@ -599,7 +600,9 @@ class DoctorService:
                 target = (
                     manifests.get(outbox.index_id)
                     if outbox.index_id is not None
-                    else active_manifests[0] if len(active_manifests) == 1 else None
+                    else active_manifests[0]
+                    if len(active_manifests) == 1
+                    else None
                 )
                 if (
                     target is None
@@ -652,9 +655,7 @@ class DoctorService:
                 row.status = OutboxStatus.PROCESSING
 
         try:
-            succeeded = await self._vector_service.process_pending_outbox(
-                len(selected)
-            )
+            succeeded = await self._vector_service.process_pending_outbox(len(selected))
         finally:
             if suspended:
                 async with self._schema.database.session() as session:
@@ -662,9 +663,7 @@ class DoctorService:
                         (
                             await session.scalars(
                                 select(VectorOutboxModel).where(
-                                    VectorOutboxModel.outbox_id.in_(
-                                        tuple(suspended)
-                                    )
+                                    VectorOutboxModel.outbox_id.in_(tuple(suspended))
                                 )
                             )
                         ).all()
@@ -699,7 +698,9 @@ class DoctorService:
             self._embedding_model_id,
             self._embedding_dimension,
             self._retrieval_schema_version,
-            active_manifest.flashback_threshold if active_manifest is not None else None,
+            active_manifest.flashback_threshold
+            if active_manifest is not None
+            else None,
         )
         return index_id
 
@@ -964,8 +965,7 @@ def _check_evidence_snapshots(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]
     """
     formal_evidence_ids = {row.evidence_id for row in snapshot.revision_evidence}
     snapshots = {
-        (row.stream_id, row.message_id): row
-        for row in snapshot.evidence_snapshots
+        (row.stream_id, row.message_id): row for row in snapshot.evidence_snapshots
     }
     issues: list[DoctorIssue] = []
     for link in snapshot.evidence_links:
@@ -1024,8 +1024,7 @@ def _check_evidence_snapshots(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]
         ):
             missing_fields.append("sender")
         if not any(
-            payload.get(field)
-            for field in ("processed_plain_text", "content", "text")
+            payload.get(field) for field in ("processed_plain_text", "content", "text")
         ):
             missing_fields.append("message_text")
         if missing_fields:
@@ -1045,8 +1044,7 @@ def _check_merge_cycles(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
     active = tuple(
         row
         for row in snapshot.relations
-        if row.relation_type == RelationType.MERGED_INTO
-        and row.retracted_at is None
+        if row.relation_type == RelationType.MERGED_INTO and row.retracted_at is None
     )
     issues: list[DoctorIssue] = []
     for relation in active:
@@ -1069,16 +1067,17 @@ def _check_merge_cycles(snapshot: _CanonicalSnapshot) -> list[DoctorIssue]:
 
     components = _strongly_connected_components(active)
     component_by_memory = {
-        memory_id: component
-        for component in components
-        for memory_id in component
+        memory_id: component for component in components for memory_id in component
     }
     for relation in active:
         source_component = component_by_memory.get(relation.source_memory_id)
         target_component = component_by_memory.get(relation.target_memory_id)
         if source_component is None or source_component != target_component:
             continue
-        if len(source_component) == 1 and relation.source_memory_id != relation.target_memory_id:
+        if (
+            len(source_component) == 1
+            and relation.source_memory_id != relation.target_memory_id
+        ):
             continue
         issues.append(
             _issue(
@@ -1363,7 +1362,9 @@ def _revisions_by_memory(
     for revision in revisions:
         grouped.setdefault(revision.memory_id, []).append(revision)
     return {
-        memory_id: tuple(sorted(rows, key=lambda row: (row.revision_no, row.revision_id)))
+        memory_id: tuple(
+            sorted(rows, key=lambda row: (row.revision_no, row.revision_id))
+        )
         for memory_id, rows in grouped.items()
     }
 

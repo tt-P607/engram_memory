@@ -2,23 +2,57 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import fields
 from datetime import UTC, datetime, timedelta, timezone
+from hashlib import sha256
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from httpx import ASGITransport, AsyncClient
+
+from src.app.plugin_system.base import BaseAction, BasePlugin
+from src.app.plugin_system.api.message_api import PersonInfo
+from src.app.plugin_system.api.storage_api import PluginDatabase
 
 from ..config import EngramMemoryConfig
 from ..diary.config import DiaryPolicy, TriggerMode
 from ..prompts import MEMORY_GUIDE_REMINDER
+from ..router import memory_admin_router as admin_router
+from ..router.memory_admin_router import VNextMemoryAdminRouter
 from ..vnext import runtime, runtime_owner
-from ..vnext.domain import MemoryChanged, VectorUpsert
-from ..vnext.enums import MemoryEventType
+from ..vnext.domain import (
+    CreateMemoryInput,
+    EvidenceInput,
+    MemoryChanged,
+    SubjectInput,
+    VectorUpsert,
+    WriteContext,
+)
+from ..vnext.enums import (
+    ActorType,
+    EvidenceSourceType,
+    MemoryEventType,
+    MemoryKind,
+    MemoryStatus,
+    SubjectKind,
+)
+from ..vnext.memory_service import MemoryService
+from ..vnext.models import MemoryModel, PersonaUpdateLogModel
+from ..vnext.persona_service import (
+    EMPTY_IMPRESSION,
+    PersonaService,
+    _format_memory_footnotes,
+)
 from ..vnext.runtime import ChromaVectorSink, MessageLike, VectorOutboxWorker
 from ..vnext.runtime_owner import VNextRuntimeOwner
+from ..vnext.schema import VNextSchema
 
 
 def _message(**values: object) -> dict[str, object]:
@@ -54,7 +88,9 @@ def owner(monkeypatch: pytest.MonkeyPatch) -> VNextRuntimeOwner:
         "ChromaVectorSearchBackend": Mock(),
         "RetrievalService": Mock(),
         "VNextToolService": Mock(),
-        "PersonaService": Mock(),
+        "PersonaService": SimpleNamespace(
+            clear_legacy_impressions=AsyncMock(return_value=0)
+        ),
         "PersonaUpdater": updater,
         "DiaryRuntime": diary,
         "VectorIndexService": vector_index,
@@ -74,7 +110,12 @@ def test_message_snapshot_has_six_fields_and_preserves_source(as_object: bool) -
     source = cast(MessageLike, SimpleNamespace(**message) if as_object else message)
     snapshot = runtime.message_to_snapshot(source)
     assert tuple(field.name for field in fields(snapshot)) == (
-        "message_id", "stream_id", "time", "text", "speaker", "snapshot",
+        "message_id",
+        "stream_id",
+        "time",
+        "text",
+        "speaker",
+        "snapshot",
     )
     assert snapshot.message_id == "message-1"
     assert snapshot.stream_id == "stream-1"
@@ -122,20 +163,30 @@ def test_snapshot_rejects_invalid_required_fields(values: dict[str, object]) -> 
 
 def test_snapshot_uses_content_and_extra_person_identity() -> None:
     """纯文本缺失时使用原始正文，并保留附加字段中的精确人物身份。"""
-    snapshot = runtime.message_to_snapshot(_message(
-        processed_plain_text="", person_id=None, extra={"person_id": "person-extra"},
-    ))
+    snapshot = runtime.message_to_snapshot(
+        _message(
+            processed_plain_text="",
+            person_id=None,
+            extra={"person_id": "person-extra"},
+        )
+    )
     assert snapshot.text == "原始正文"
     assert snapshot.snapshot["person_id"] == "person-extra"
 
 
-def test_snapshot_generates_missing_core_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_snapshot_generates_missing_core_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """人物身份缺失时仅按平台与发送账号生成核心 ID。"""
     generate = Mock(return_value="person-generated")
     monkeypatch.setattr(runtime.person_api, "generate_person_id", generate)
-    snapshot = runtime.message_to_snapshot(_message(
-        person_id=None, platform="test", sender_id="sender-test",
-    ))
+    snapshot = runtime.message_to_snapshot(
+        _message(
+            person_id=None,
+            platform="test",
+            sender_id="sender-test",
+        )
+    )
     generate.assert_called_once_with("test", "sender-test")
     assert snapshot.snapshot["person_id"] == "person-generated"
 
@@ -146,9 +197,14 @@ def test_snapshot_marks_bot_without_generating_account_identity(
     """Bot 发言保留明确身份，不生成普通账号人物 ID。"""
     generate = Mock()
     monkeypatch.setattr(runtime.person_api, "generate_person_id", generate)
-    snapshot = runtime.message_to_snapshot(_message(
-        person_id=None, platform="test", sender_id="sender-test", sender_role="BOT",
-    ))
+    snapshot = runtime.message_to_snapshot(
+        _message(
+            person_id=None,
+            platform="test",
+            sender_id="sender-test",
+            sender_role="BOT",
+        )
+    )
     generate.assert_not_called()
     assert snapshot.snapshot["person_id"] == "bot"
     assert snapshot.snapshot["speaker_is_bot"] is True
@@ -157,49 +213,79 @@ def test_snapshot_marks_bot_without_generating_account_identity(
 def test_runtime_exposes_only_snapshot_and_vector_interfaces() -> None:
     """公开运行接口只包含来源快照与派生向量能力。"""
     assert set(runtime.__all__) == {
-        "DEFAULT_EMBEDDING_MODEL_TASK", "DEFAULT_VECTOR_COLLECTION",
-        "DEFAULT_EMBEDDING_REQUEST_NAME", "DEFAULT_VECTOR_DB_PATH",
-        "MessageSnapshot", "VectorSinkError", "message_to_snapshot",
-        "ChromaVectorSink", "VectorOutboxWorker", "VectorIndexServiceProtocol",
+        "DEFAULT_EMBEDDING_MODEL_TASK",
+        "DEFAULT_VECTOR_COLLECTION",
+        "DEFAULT_EMBEDDING_REQUEST_NAME",
+        "DEFAULT_VECTOR_DB_PATH",
+        "MessageSnapshot",
+        "VectorSinkError",
+        "message_to_snapshot",
+        "ChromaVectorSink",
+        "VectorOutboxWorker",
+        "VectorIndexServiceProtocol",
     }
     for name in (
-        "ExperienceEncoderDraftProducer", "SleepAgentStepProducer", "PersonaReviewProducer",
-        "MessageBatcher", "RuntimeMessageAdapter", "VNextRuntimeAdapter",
-        "message_to_encoder_message", "RuntimeAdapter", "LLMResponseFormatError",
+        "ExperienceEncoderDraftProducer",
+        "SleepAgentStepProducer",
+        "PersonaReviewProducer",
+        "MessageBatcher",
+        "RuntimeMessageAdapter",
+        "VNextRuntimeAdapter",
+        "message_to_encoder_message",
+        "RuntimeAdapter",
+        "LLMResponseFormatError",
     ):
         assert not hasattr(runtime, name)
 
 
-def test_owner_wires_persona_and_memory_change_callback(owner: VNextRuntimeOwner) -> None:
+def test_owner_wires_persona_and_memory_change_callback(
+    owner: VNextRuntimeOwner,
+) -> None:
     """Owner 共享人物服务与仓储，并向工具服务提供正式变化回调。"""
     runtime_owner.PersonaService.assert_called_once_with(  # type: ignore[attr-defined]
-        owner.schema, persona_config=owner.config.vnext.persona,
+        owner.schema,
+        persona_config=owner.config.vnext.persona,
     )
     runtime_owner.PersonaUpdater.assert_called_once_with(  # type: ignore[attr-defined]
-        owner.persona_service, owner.repository, max_concurrency=3,
+        owner.persona_service,
+        owner.repository,
+        max_concurrency=3,
     )
     arguments = runtime_owner.VNextToolService.call_args.kwargs  # type: ignore[attr-defined]
     assert arguments["on_memory_changed"] == owner._on_memory_changed
     assert "persona_max_length" not in arguments
     assert "on_actor_memory_changed" not in arguments
     for name in (
-        "encoder", "sleep_agent", "sleep_service", "persona_producer", "runtime_adapter",
-        "_pending_messages", "encode_stream", "flush_all_streams", "run_daily_sleep",
-        "run_pressure_sleep", "_review_personas", "_persona_current_view", "_person_memory_ids",
+        "encoder",
+        "sleep_agent",
+        "sleep_service",
+        "persona_producer",
+        "runtime_adapter",
+        "_pending_messages",
+        "encode_stream",
+        "flush_all_streams",
+        "run_daily_sleep",
+        "run_pressure_sleep",
+        "_review_personas",
+        "_persona_current_view",
+        "_person_memory_ids",
     ):
         assert not hasattr(owner, name)
 
 
 @pytest.mark.asyncio
 async def test_owner_publishes_committed_change(
-    owner: VNextRuntimeOwner, monkeypatch: pytest.MonkeyPatch,
+    owner: VNextRuntimeOwner,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """正式记忆变化通过公开事件 API 发布完整变化对象。"""
     publish = AsyncMock()
     monkeypatch.setattr(runtime_owner.event_api, "publish_event", publish)
     change = MemoryChanged(
-        memory_id="memory-1", change_type=MemoryEventType.REVISED,
-        before_person_ids=("person-a",), after_person_ids=("person-b",),
+        memory_id="memory-1",
+        change_type=MemoryEventType.REVISED,
+        before_person_ids=("person-a",),
+        after_person_ids=("person-b",),
     )
     await owner._on_memory_changed(change)
     publish.assert_awaited_once_with("engram_memory:memory_changed", {"change": change})
@@ -207,17 +293,60 @@ async def test_owner_publishes_committed_change(
 
 
 @pytest.mark.asyncio
-async def test_owner_initializes_vector_resources_once(owner: VNextRuntimeOwner) -> None:
+async def test_owner_initializes_vector_resources_once(
+    owner: VNextRuntimeOwner,
+) -> None:
     """初始化只建立规范库和派生索引，重复调用不启动额外 Worker。"""
     await owner.initialize()
     await owner.initialize()
     owner.schema.initialize.assert_awaited_once()  # type: ignore[attr-defined]
+    owner.persona_service.clear_legacy_impressions.assert_awaited_once()  # type: ignore[attr-defined]
     owner.vector_index.ensure_active_manifest.assert_awaited_once_with(  # type: ignore[attr-defined]
-        "embedding-test", 4, "engram-vnext-2",
+        "embedding-test",
+        4,
+        "engram-vnext-2",
     )
     owner.vector_worker.start.assert_called_once()  # type: ignore[attr-defined]
     owner.persona_updater.start.assert_called_once()  # type: ignore[attr-defined]
     assert owner._initialized is True
+
+
+@pytest.mark.asyncio
+async def test_owner_cleans_legacy_before_starting_generation(
+    owner: VNextRuntimeOwner,
+) -> None:
+    """规范库就绪后清理旧稿，清理完成之前不启动任何生成队列。"""
+
+    async def clear() -> int:
+        """确认清理前规范库可用且后台生成尚未开始。"""
+        owner.schema.initialize.assert_awaited_once()  # type: ignore[attr-defined]
+        owner.vector_worker.start.assert_not_called()  # type: ignore[attr-defined]
+        owner.persona_updater.start.assert_not_called()  # type: ignore[attr-defined]
+        owner.diary.initialize.assert_not_awaited()  # type: ignore[attr-defined]
+        return 2
+
+    cleanup = owner.persona_service.clear_legacy_impressions
+    assert isinstance(cleanup, AsyncMock)
+    cleanup.side_effect = clear
+    await owner.initialize()
+    owner.persona_updater.start.assert_called_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_owner_cleanup_failure_stops_startup(
+    owner: VNextRuntimeOwner,
+) -> None:
+    """旧稿归档或核心写入失败时停止启动，不让生成队列继续使用残留。"""
+    cleanup = owner.persona_service.clear_legacy_impressions
+    assert isinstance(cleanup, AsyncMock)
+    cleanup.side_effect = RuntimeError("cleanup-test")
+    with pytest.raises(RuntimeError, match="cleanup-test"):
+        await owner.initialize()
+    owner.persona_updater.start.assert_not_called()  # type: ignore[attr-defined]
+    owner.vector_worker.start.assert_not_called()  # type: ignore[attr-defined]
+    owner.diary.initialize.assert_not_awaited()  # type: ignore[attr-defined]
+    owner.schema.close.assert_awaited_once()  # type: ignore[attr-defined]
+    assert owner._initialized is False
 
 
 @pytest.mark.asyncio
@@ -235,7 +364,9 @@ async def test_owner_initialization_failure_releases_partial_resources(
 
 
 @pytest.mark.asyncio
-async def test_owner_close_releases_resources_and_is_idempotent(owner: VNextRuntimeOwner) -> None:
+async def test_owner_close_releases_resources_and_is_idempotent(
+    owner: VNextRuntimeOwner,
+) -> None:
     """关闭移除闪回缓存并幂等停止向量 Worker 与规范数据库。"""
     await owner.initialize()
     owner._recent_messages["stream-1"] = {"message-1": _message()}
@@ -251,7 +382,9 @@ async def test_owner_close_releases_resources_and_is_idempotent(owner: VNextRunt
 
 
 @pytest.mark.asyncio
-async def test_persona_close_failure_does_not_leak_other_resources(owner: VNextRuntimeOwner) -> None:
+async def test_persona_close_failure_does_not_leak_other_resources(
+    owner: VNextRuntimeOwner,
+) -> None:
     """人物更新器关闭失败仍释放 Worker 和规范数据库，并向调用者报错。"""
     await owner.initialize()
     owner.persona_updater.close.side_effect = RuntimeError("persona-test")  # type: ignore[attr-defined]
@@ -263,7 +396,8 @@ async def test_persona_close_failure_does_not_leak_other_resources(owner: VNextR
 
 
 def test_observe_message_keeps_bounded_context_before_prefetch(
-    owner: VNextRuntimeOwner, monkeypatch: pytest.MonkeyPatch,
+    owner: VNextRuntimeOwner,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """当前消息进入有界闪回上下文后才触发预取。"""
     owner.config.vnext.flashback.context_turns = 2
@@ -283,7 +417,8 @@ def test_observe_message_keeps_bounded_context_before_prefetch(
 
 @pytest.mark.asyncio
 async def test_flashback_context_includes_unpersisted_messages(
-    owner: VNextRuntimeOwner, monkeypatch: pytest.MonkeyPatch,
+    owner: VNextRuntimeOwner,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """未落库的新消息参与闪回上下文，相同 ID 使用接收缓存中的正文。"""
     owner.config.vnext.flashback.context_turns = 2
@@ -291,17 +426,24 @@ async def test_flashback_context_includes_unpersisted_messages(
     load = AsyncMock(return_value=(stored,))
     monkeypatch.setattr(runtime_owner.stream_api, "get_stream_messages", load)
     owner.observe_message(_message(processed_plain_text="更新正文"))
-    owner.observe_message(_message(
-        message_id="message-2", processed_plain_text="最新正文", time="2026-01-01T00:00:01Z",
-    ))
+    owner.observe_message(
+        _message(
+            message_id="message-2",
+            processed_plain_text="最新正文",
+            time="2026-01-01T00:00:01Z",
+        )
+    )
     assert await owner.recent_turns_for_flashback("stream-1") == (
-        "示例发言者: 更新正文", "示例发言者: 最新正文",
+        "示例发言者: 更新正文",
+        "示例发言者: 最新正文",
     )
     load.assert_awaited_once_with("stream-1", limit=2)
 
 
 @pytest.mark.asyncio
-async def test_consumed_flashback_records_exposure_only_once(owner: VNextRuntimeOwner) -> None:
+async def test_consumed_flashback_records_exposure_only_once(
+    owner: VNextRuntimeOwner,
+) -> None:
     """被当前回复消费的闪回结果只记录一次曝光并推进轮次。"""
     owner._initialized = True
     candidate = SimpleNamespace(memory_id="memory-1")
@@ -310,23 +452,58 @@ async def test_consumed_flashback_records_exposure_only_once(owner: VNextRuntime
     assert await owner.consume_flashback_prefetch("stream-1") == (candidate,)
     assert await owner.consume_flashback_prefetch("stream-1") == ()
     owner.flashback.record_exposure.assert_awaited_once_with(  # type: ignore[attr-defined]
-        ("memory-1",), "stream-1", 4,
+        ("memory-1",),
+        "stream-1",
+        4,
     )
     assert owner._prompt_turns["stream-1"] == 5
 
 
 @pytest.mark.asyncio
-async def test_stale_flashback_does_not_record_exposure(owner: VNextRuntimeOwner) -> None:
+async def test_stale_flashback_does_not_record_exposure(
+    owner: VNextRuntimeOwner,
+) -> None:
     """过期预取结果不注入也不记录曝光。"""
     owner._initialized = True
     owner._flashback_generations["stream-1"] = 2
-    owner._flashback_results["stream-1"] = ((SimpleNamespace(memory_id="memory-1"),), 4, 1)
+    owner._flashback_results["stream-1"] = (
+        (SimpleNamespace(memory_id="memory-1"),),
+        4,
+        1,
+    )
     assert await owner.consume_flashback_prefetch("stream-1") == ()
     owner.flashback.record_exposure.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_vector_sink_preserves_batch_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_failed_flashback_prefetch_reports_error_without_exposure(
+    owner: VNextRuntimeOwner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """预取异常可见且不记录曝光，空异常消息仍保留异常类型。"""
+    owner._initialized = True
+    owner._flashback_task_ids["stream-1"] = "prefetch-test"
+    failed: asyncio.Future[tuple[object, ...]] = (
+        asyncio.get_running_loop().create_future()
+    )
+    failed.set_exception(RuntimeError())
+    monkeypatch.setattr(
+        runtime_owner, "get_managed_task", lambda task_id: SimpleNamespace(task=failed)
+    )
+    warning = Mock()
+    monkeypatch.setattr(runtime_owner.logger, "warning", warning)
+
+    assert await owner.consume_flashback_prefetch("stream-1") == ()
+    warning.assert_called_once()
+    assert "RuntimeError" in warning.call_args.args[0]
+    assert not owner._flashback_task_ids
+    owner.flashback.record_exposure.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_vector_sink_preserves_batch_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """批量向量写入保持正式入口正文、身份和内容摘要。"""
     database = SimpleNamespace(delete=AsyncMock(), add=AsyncMock())
     sink = ChromaVectorSink(vector_db=cast(Any, database))
@@ -334,21 +511,27 @@ async def test_vector_sink_preserves_batch_projection(monkeypatch: pytest.Monkey
     monkeypatch.setattr(sink, "embed_texts", embed)
     items = tuple(
         VectorUpsert(
-            entry_id=f"entry-{index}", memory_id=f"memory-{index}",
-            revision_id=f"revision-{index}", text=f"text-{index}", content_hash=f"hash-{index}",
+            entry_id=f"entry-{index}",
+            memory_id=f"memory-{index}",
+            revision_id=f"revision-{index}",
+            text=f"text-{index}",
+            content_hash=f"hash-{index}",
         )
         for index in range(2)
     )
     await sink.upsert_many(items)
     embed.assert_awaited_once_with(("text-0", "text-1"))
     database.delete.assert_awaited_once_with(
-        collection_name=sink.collection_name, ids=["entry-0", "entry-1"],
+        collection_name=sink.collection_name,
+        ids=["entry-0", "entry-1"],
     )
     payload = database.add.call_args.kwargs
     assert payload["documents"] == ["text-0", "text-1"]
     assert payload["metadatas"][0] == {
-        "entry_id": "entry-0", "memory_id": "memory-0",
-        "revision_id": "revision-0", "content_hash": "hash-0",
+        "entry_id": "entry-0",
+        "memory_id": "memory-0",
+        "revision_id": "revision-0",
+        "content_hash": "hash-0",
     }
 
 
@@ -366,20 +549,30 @@ async def test_vector_worker_only_processes_pending_outbox() -> None:
 
 
 def test_plugin_registers_exact_component_graph() -> None:
-    """入口仅注册查询工具、写操作、变化与闪回事件、服务和管理路由。"""
+    """入口仅注册预期组件，记忆 Action 满足框架文本能力声明校验。"""
     from ..plugin import EngramMemoryPlugin
 
     plugin = EngramMemoryPlugin(EngramMemoryConfig())
     components = plugin.get_components()
     assert {component.__name__ for component in components} == {
-        "VNextMemorySearchTool", "VNextMemoryReadTool", "VNextPersonLookupTool",
-        "VNextMemoryWriteAction", "VNextMemoryReviseAction", "VNextMemoryInvalidateAction",
-        "VNextMemoryChangedEventHandler", "VNextFlashbackEventHandler", "VNextMemoryService",
+        "VNextMemorySearchTool",
+        "VNextMemoryReadTool",
+        "VNextPersonLookupTool",
+        "VNextMemoryWriteAction",
+        "VNextMemoryReviseAction",
+        "VNextMemoryInvalidateAction",
+        "VNextMemoryChangedEventHandler",
+        "VNextFlashbackEventHandler",
+        "VNextMemoryService",
         "VNextPrivatePersonaEventHandler",
         "ChatDiaryEventHandler",
-        "VNextDoctorRouter", "VNextMemoryAdminRouter",
+        "VNextDoctorRouter",
+        "VNextMemoryAdminRouter",
     }
     assert len(components) == 13
+    for component in components:
+        if issubclass(component, BaseAction):
+            assert component.validate_associated_types() == ["text"]
     names = {component.__name__: component.name for component in components}
     assert names["VNextMemoryChangedEventHandler"] == "memory_changed"
     assert names["VNextFlashbackEventHandler"] == "vnext_flashback_injector"
@@ -419,7 +612,10 @@ def test_flashback_prompt_conveys_sudden_recall_and_keeps_complete_material() ->
     from ..vnext.flashback_service import FlashbackCandidate
 
     candidate = FlashbackCandidate(
-        "memory-example", "私下聊起的事情", "对方说过一件私事，还没有打算告诉别人。", "当前话题",
+        "memory-example",
+        "私下聊起的事情",
+        "对方说过一件私事，还没有打算告诉别人。",
+        "当前话题",
     )
     prompt = candidate.to_prompt_block()
     assert candidate.memory_id in prompt
@@ -443,9 +639,13 @@ async def test_plugin_load_refreshes_routers_and_registers_guide(
     from .. import plugin as plugin_module
 
     plugin = plugin_module.EngramMemoryPlugin(EngramMemoryConfig())
-    resource = SimpleNamespace(config=plugin.config, initialize=AsyncMock(), close=AsyncMock())
+    resource = SimpleNamespace(
+        config=plugin.config, initialize=AsyncMock(), close=AsyncMock()
+    )
     monkeypatch.setattr(plugin_module, "VNextRuntimeOwner", Mock(return_value=resource))
-    monkeypatch.setattr(plugin_module.router_api, "get_mounted_router", Mock(return_value=object()))
+    monkeypatch.setattr(
+        plugin_module.router_api, "get_mounted_router", Mock(return_value=object())
+    )
     reload_router = AsyncMock()
     register_guide = Mock()
     monkeypatch.setattr(plugin_module.router_api, "reload_router", reload_router)
@@ -462,17 +662,32 @@ async def test_plugin_load_refreshes_routers_and_registers_guide(
     assert register_guide.call_args.kwargs["name"] == "engram_memory_guide"
     assert isinstance(plugin.config, EngramMemoryConfig)
     assert plugin.config.vnext.prompt_injection.reminder_at_end is True
-    assert register_guide.call_args.kwargs["insert_type"] is plugin_module.prompt_api.SystemReminderInsertType.DYNAMIC
+    assert (
+        register_guide.call_args.kwargs["insert_type"]
+        is plugin_module.prompt_api.SystemReminderInsertType.DYNAMIC
+    )
     guide = register_guide.call_args.kwargs["content"]
     assert guide == MEMORY_GUIDE_REMINDER
     for instruction in (
-        "可以主动回想，不必等对方要求", "不一定要把那件事说出来",
-        "即使他没有特意叮嘱保密", "跟本人私下接着聊", "不顺带补出其他人还不知道的细节",
-        "也不用向旁人强调自己知道却不能说", "绝不要在回复中原样背诵或机械复述",
-        "在当下的场景用适合的方式表达", "多换换说法",
-        "不把私人透露写成大家已经知道的事实", "current", "history", "full",
-        "source_message_ids", "primary_person_id", "secondary_person_ids",
-        "对方希望你怎样称呼他", "群聊里，跟某个人开始聊天", "必须先调用 `person_lookup`",
+        "可以主动回想，不必等对方要求",
+        "不一定要把那件事说出来",
+        "即使他没有特意叮嘱保密",
+        "跟本人私下接着聊",
+        "不顺带补出其他人还不知道的细节",
+        "也不用向旁人强调自己知道却不能说",
+        "绝不要在回复中原样背诵或机械复述",
+        "在当下的场景用适合的方式表达",
+        "多换换说法",
+        "不把私人透露写成大家已经知道的事实",
+        "current",
+        "history",
+        "full",
+        "source_message_ids",
+        "primary_person_id",
+        "secondary_person_ids",
+        "对方希望你怎样称呼他",
+        "群聊里，跟某个人开始聊天",
+        "必须先调用 `person_lookup`",
         "私聊里，对方的人物印象会作为 SystemReminder 自动注入上下文",
         "不要求开始聊天前再调用工具",
     ):
@@ -481,16 +696,24 @@ async def test_plugin_load_refreshes_routers_and_registers_guide(
 
 
 @pytest.mark.asyncio
-async def test_plugin_router_failure_closes_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_plugin_router_failure_closes_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """路由刷新失败时清理已初始化的 Owner，并保留原始异常。"""
     from .. import plugin as plugin_module
 
     plugin = plugin_module.EngramMemoryPlugin(EngramMemoryConfig())
-    resource = SimpleNamespace(config=plugin.config, initialize=AsyncMock(), close=AsyncMock())
+    resource = SimpleNamespace(
+        config=plugin.config, initialize=AsyncMock(), close=AsyncMock()
+    )
     monkeypatch.setattr(plugin_module, "VNextRuntimeOwner", Mock(return_value=resource))
-    monkeypatch.setattr(plugin_module.router_api, "get_mounted_router", Mock(return_value=object()))
     monkeypatch.setattr(
-        plugin_module.router_api, "reload_router", AsyncMock(side_effect=RuntimeError("router-test")),
+        plugin_module.router_api, "get_mounted_router", Mock(return_value=object())
+    )
+    monkeypatch.setattr(
+        plugin_module.router_api,
+        "reload_router",
+        AsyncMock(side_effect=RuntimeError("router-test")),
     )
     register_guide = Mock()
     monkeypatch.setattr(plugin_module.prompt_api, "add_system_reminder", register_guide)
@@ -515,13 +738,17 @@ async def test_plugin_unload_cleans_guide_when_owner_close_fails(
     plugin._persona_reminder_streams.add("stream-private")
     delete_stream = Mock()
     delete_guide = Mock()
-    monkeypatch.setattr(plugin_module.prompt_api, "delete_stream_reminder", delete_stream)
+    monkeypatch.setattr(
+        plugin_module.prompt_api, "delete_stream_reminder", delete_stream
+    )
     monkeypatch.setattr(plugin_module, "delete_owned_reminder", delete_guide)
     with pytest.raises(RuntimeError, match="owner-test"):
         await plugin.on_plugin_unloaded()
     assert delete_stream.call_count == 2
     delete_stream.assert_any_call("stream-1", "actor", "flashback-test")
-    delete_stream.assert_any_call("stream-private", "actor", plugin_module.PERSONA_REMINDER_NAME)
+    delete_stream.assert_any_call(
+        "stream-private", "actor", plugin_module.PERSONA_REMINDER_NAME
+    )
     delete_guide.assert_called_once_with("actor", "engram_memory_guide")
     assert not plugin._flashback_reminder_streams
     assert not plugin._persona_reminder_streams
@@ -547,12 +774,16 @@ def test_diary_defaults_and_independent_switches() -> None:
 
 @pytest.mark.parametrize(
     ("mode", "expected"),
-    [("time", (False, False, True, True)),
-     ("messages", (False, True, False, True)),
-     ("either", (False, True, True, True)),
-     ("both", (False, False, False, True))],
+    [
+        ("time", (False, False, True, True)),
+        ("messages", (False, True, False, True)),
+        ("either", (False, True, True, True)),
+        ("both", (False, False, False, True)),
+    ],
 )
-def test_diary_four_trigger_modes(mode: TriggerMode, expected: tuple[bool, ...]) -> None:
+def test_diary_four_trigger_modes(
+    mode: TriggerMode, expected: tuple[bool, ...]
+) -> None:
     """时间和消息数的四种组合遵守各自边界，任何模式都不整理空批次。"""
     policy = DiaryPolicy(trigger_mode=mode, interval_seconds=10, message_threshold=2)
     actual = tuple(
@@ -561,3 +792,245 @@ def test_diary_four_trigger_modes(mode: TriggerMode, expected: tuple[bool, ...])
     )
     assert actual == expected
     assert not policy.is_due(message_count=0, elapsed_seconds=100)
+
+
+@pytest.mark.asyncio
+async def test_memory_admin_pages_filter_before_counting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """管理查询分页无重漏，状态与字面文本筛选在计数和分页之前执行。"""
+    schema = VNextSchema(str(tmp_path / "memory-admin.db"))
+    await schema.initialize()
+    service = MemoryService(schema, "example-embedding")
+    router = VNextMemoryAdminRouter(cast(BasePlugin, SimpleNamespace()))
+    monkeypatch.setattr(router, "_owner", lambda: SimpleNamespace(schema=schema))
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    memory_ids: list[str] = []
+    try:
+        for number in range(7):
+            result = await service.create_memory(
+                CreateMemoryInput(
+                    title=f"归档项目 {number}",
+                    content="进度 100%" if number == 0 else "项目讨论正文",
+                    memory_kind=MemoryKind.EVENT,
+                    subject=SubjectInput(SubjectKind.UNKNOWN),
+                    observed_at=now,
+                    evidence=(
+                        EvidenceInput(EvidenceSourceType.ADMIN, now, note="示例来源"),
+                    ),
+                ),
+                WriteContext(ActorType.ADMIN),
+            )
+            memory_ids.append(result.memory_id)
+        async with schema.database.session() as session:
+            for memory_id in memory_ids:
+                memory = await session.get(MemoryModel, memory_id)
+                assert memory is not None
+                memory.updated_at = now
+                if memory_id == memory_ids[-1]:
+                    memory.status = MemoryStatus.TOMBSTONED
+            await session.commit()
+        transport = ASGITransport(app=router.app, client=("127.0.0.1", 10000))
+        async with AsyncClient(
+            transport=transport, base_url="http://localhost"
+        ) as client:
+            pages = []
+            for page in (1, 2, 3):
+                response = await client.get(
+                    "/api/memories", params={"page": page, "limit": 2}
+                )
+                assert response.status_code == 200
+                data = response.json()
+                assert data["total"] == 6
+                assert data["pages"] == 3
+                assert data["page"] == page
+                pages.extend(item["memory_id"] for item in data["items"])
+            assert pages == sorted(memory_ids[:-1])
+            assert len(set(pages)) == 6
+            response = await client.get(
+                "/api/memories", params={"q": "归档项目", "status": "TOMBSTONED"}
+            )
+            assert response.json()["total"] == 1
+            assert response.json()["items"][0]["memory_id"] == memory_ids[-1]
+            response = await client.get(
+                "/api/memories", params={"q": memory_ids[-1], "status": "ALL"}
+            )
+            assert response.json()["total"] == 1
+            response = await client.get("/api/memories", params={"q": "%"})
+            assert response.json()["total"] == 1
+            assert response.json()["items"][0]["memory_id"] == memory_ids[0]
+            response = await client.get("/api/memories", params={"page": 4, "limit": 2})
+            assert response.json()["items"] == []
+            assert response.json()["total"] == 6
+            assert (
+                await client.get("/api/memories", params={"page": 0})
+            ).status_code == 422
+    finally:
+        await schema.close()
+
+
+@asynccontextmanager
+async def _admin_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[tuple[AsyncClient, VNextSchema, PluginDatabase]]:
+    """以两个隔离数据库提供真实管理路由，阻止访问正式人物库。"""
+    schema = VNextSchema(str(tmp_path / "admin-memory.db"))
+    core = PluginDatabase(str(tmp_path / "admin-people.db"), [PersonInfo])
+    await schema.initialize()
+    await core.initialize()
+    monkeypatch.setattr(admin_router.database_api, "query", core.query)
+
+    async def person_by(model: type[PersonInfo], **filters: Any) -> PersonInfo | None:
+        """只读取临时人物记录，不创建或刷新人物。"""
+        return await core.crud(model).get_by(**filters)
+
+    monkeypatch.setattr(admin_router.database_api, "get_by", person_by)
+    router = VNextMemoryAdminRouter(cast(BasePlugin, SimpleNamespace()))
+    monkeypatch.setattr(
+        router,
+        "_owner",
+        lambda: SimpleNamespace(schema=schema, persona_service=PersonaService(schema)),
+    )
+    transport = ASGITransport(app=router.app, client=("127.0.0.1", 10000))
+    try:
+        async with AsyncClient(
+            transport=transport, base_url="http://localhost"
+        ) as client:
+            yield client, schema, core
+    finally:
+        await core.close()
+        await schema.close()
+
+
+def _admin_person(number: int, impression: str = "正式人物印象") -> PersonInfo:
+    """构造昵称和群名片不同的虚构人物。"""
+    return PersonInfo(
+        person_id=f"person-{number:03d}",
+        platform="test",
+        user_id=f"account-{number:03d}",
+        nickname=f"平台昵称 {number:03d}",
+        cardname=f"群名片 {number:03d}",
+        impression=impression,
+        first_interaction=1,
+        last_interaction=2,
+        interaction_count=1,
+        attitude=50,
+        created_at=1,
+        updated_at=2,
+    )
+
+
+@pytest.mark.asyncio
+async def test_memory_admin_personas_paginate_and_deduplicate_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """人物超过百条仍完整分页，多字段命中同人不重复，也能按账号查询。"""
+    async with _admin_client(tmp_path, monkeypatch) as (client, _, core):
+        people = [_admin_person(number) for number in range(105)]
+        people[0].nickname = "共同查询"
+        people[0].cardname = "共同查询"
+        people[0].impression = "共同查询的印象"
+        async with core.session() as session:
+            session.add_all(
+                people + [_admin_person(105, EMPTY_IMPRESSION), _admin_person(106, "")]
+            )
+            await session.commit()
+        found: list[str] = []
+        for page in range(1, 7):
+            response = await client.get(
+                "/api/personas", params={"page": page, "limit": 20}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["total"] == 105
+            assert data["pages"] == 6
+            found.extend(item["person_id"] for item in data["items"])
+            for item in data["items"]:
+                assert item["display_name"] == item["nickname"]
+                assert "impression" not in item
+                assert "profile_updated_at" in item
+        assert found == [f"person-{number:03d}" for number in range(105)]
+        response = await client.get("/api/personas", params={"q": "共同查询"})
+        assert response.json()["total"] == 1
+        assert response.json()["items"][0]["person_id"] == "person-000"
+        response = await client.get("/api/personas", params={"q": "account-104"})
+        assert response.json()["items"][0]["user_id"] == "account-104"
+        response = await client.get("/api/personas", params={"q": "person-104"})
+        assert response.json()["total"] == 1
+        response = await client.get(
+            "/api/personas", params={"q": "平台昵称", "limit": 50, "page": 3}
+        )
+        assert response.json()["total"] == 104
+        assert len(response.json()["items"]) == 4
+        assert (
+            await client.get("/api/personas", params={"page": 0})
+        ).status_code == 422
+        assert (
+            await client.get("/api/personas", params={"sort": "invalid"})
+        ).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_memory_admin_persona_references_and_distinct_timestamps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """展示标题化依据但保留原文，缺失依据明确标识且资料时间不冒充印象时间。"""
+    async with _admin_client(tmp_path, monkeypatch) as (client, schema, core):
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+        result = await MemoryService(schema, "example-embedding").create_memory(
+            CreateMemoryInput(
+                title="共同计划",
+                content="计划正文",
+                memory_kind=MemoryKind.EVENT,
+                subject=SubjectInput(SubjectKind.UNKNOWN),
+                observed_at=now,
+                evidence=(
+                    EvidenceInput(EvidenceSourceType.ADMIN, now, note="示例来源"),
+                ),
+            ),
+            WriteContext(ActorType.ADMIN),
+        )
+        missing_id = "00000000-0000-4000-8000-000000000000"
+        impression = _format_memory_footnotes(
+            f"保持原意 [Memory: {result.memory_id}] [Memory: {missing_id}]"
+        )
+        person = _admin_person(0, impression)
+        async with core.session() as session:
+            session.add(person)
+            await session.commit()
+        response = await client.get("/api/personas/person-000")
+        assert response.status_code == 200
+        item = response.json()["item"]
+        assert item["impression"] == impression
+        assert result.memory_id not in item["impression_body"]
+        assert item["display_name"] == "平台昵称 000"
+        assert item["cardname"] == "群名片 000"
+        assert item["impression_updated_at"] is None
+        assert item["profile_updated_at"] is not None
+        assert item["references"][0]["marker"] == "①"
+        memories = item["references"][0]["memories"]
+        assert memories[0]["title"] == "共同计划"
+        assert memories[0]["memory_id"] == result.memory_id
+        assert memories[0]["exists"] is True
+        assert memories[1]["memory_id"] == missing_id
+        assert memories[1]["exists"] is False
+        async with schema.database.session() as session:
+            session.add(
+                PersonaUpdateLogModel(
+                    update_id="update-example",
+                    person_id=person.person_id,
+                    old_content_hash="",
+                    new_content_hash=sha256(impression.encode()).hexdigest(),
+                    generator_version="memory-chat-v1",
+                    revision_no=1,
+                    impression_text=impression,
+                    reason="示例审查",
+                    created_at=now,
+                )
+            )
+            await session.commit()
+        item = (await client.get("/api/personas/person-000")).json()["item"]
+        assert item["impression_updated_at"] == now.isoformat()
+        assert item["impression_updated_at"] != item["profile_updated_at"]
+        assert (await client.get("/api/personas/missing")).status_code == 404
+        assert (await client.get("/assets/icons.js")).status_code == 200

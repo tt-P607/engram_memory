@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar, Protocol, cast
 
-from src.app.plugin_system.api import prompt_api
 from src.app.plugin_system.api.event_api import EventDecision
 from src.app.plugin_system.base import BaseEventHandler
 from src.app.plugin_system.types import EventType
 
-from .injection import REMINDER_NAME, _contains_diary_block, refresh_diary_payloads
+from .injection import _contains_diary_block, refresh_diary_payloads
 
 if TYPE_CHECKING:
     from typing import Any
@@ -18,16 +17,17 @@ if TYPE_CHECKING:
 class _DiaryRuntime(Protocol):
     """聊天日记运行时的事件侧接口。"""
 
-    ready: bool
-
     def start(self) -> None:
         """启动后台日记处理。"""
 
     def observe_stream(self, stream_id: str) -> None:
         """唤醒指定流的后台处理。"""
 
-    async def reminder_content(self, stream_id: str, *, include_tail: bool = False) -> str:
+    async def reminder_content(self, stream_id: str) -> str:
         """读取流当前允许注入的日记内容。"""
+
+    def set_reminder(self, stream_id: str, content: str) -> None:
+        """更新流日记提醒并登记其生命周期。"""
 
 
 class _RuntimeOwner(Protocol):
@@ -78,8 +78,8 @@ class ChatDiaryEventHandler(BaseEventHandler):
         if event_name == EventType.ON_CHATTER_STEP:
             stream_id = params.get("stream_id")
             if isinstance(stream_id, str) and stream_id.strip():
-                content = await runtime.reminder_content(stream_id, include_tail=False)
-                self._set_reminder(stream_id, content)
+                content = await runtime.reminder_content(stream_id)
+                runtime.set_reminder(stream_id, content)
             return EventDecision.SUCCESS, params
 
         if event_name == EventType.BEFORE_LLM_REQUEST:
@@ -106,25 +106,10 @@ class ChatDiaryEventHandler(BaseEventHandler):
         ):
             return
 
-        content = await runtime.reminder_content(stream_id, include_tail=True)
+        content = await runtime.reminder_content(stream_id)
         if refresh_diary_payloads(payloads, content):
             params["payloads"] = payloads
-        self._set_reminder(stream_id, content)
-
-    @staticmethod
-    def _set_reminder(stream_id: str, content: str) -> None:
-        """覆盖或删除一个流的 Actor 日记提醒。"""
-        if content:
-            prompt_api.add_stream_reminder(
-                stream_id,
-                "actor",
-                REMINDER_NAME,
-                content,
-                insert_type=prompt_api.SystemReminderInsertType.DYNAMIC,
-                consume=prompt_api.SystemReminderConsumeType.FOREVER,
-            )
-        else:
-            prompt_api.delete_stream_reminder(stream_id, "actor", REMINDER_NAME)
+        runtime.set_reminder(stream_id, content)
 
     def _runtime(self) -> _DiaryRuntime | None:
         """读取插件 owner 当前持有的聊天日记运行时。"""

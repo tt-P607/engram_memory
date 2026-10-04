@@ -18,7 +18,7 @@ from sqlalchemy import and_, desc, or_, select, text
 
 from src.core.models.sql_alchemy import ChatStreams, Messages, PersonInfo
 from src.core.prompt.system_reminder import get_system_reminder_store
-from src.kernel.concurrency import get_task_manager
+from src.kernel.concurrency import TaskNotFoundError, get_task_manager
 from src.kernel.db import get_db_session
 from src.kernel.vector_db import get_vector_db_service
 
@@ -334,7 +334,9 @@ async def _message_snapshots_from_rows(
                             PersonInfo.person_id.in_(person_ids)
                         )
                     )
-                ).mappings().all()
+                )
+                .mappings()
+                .all()
             ]
         people = {
             str(row.get("person_id") or ""): row
@@ -399,9 +401,13 @@ async def read_message_snapshots(
             dict(row)
             for row in (
                 await session.execute(
-                    select(Messages.__table__).where(Messages.message_id.in_(message_ids))
+                    select(Messages.__table__).where(
+                        Messages.message_id.in_(message_ids)
+                    )
                 )
-            ).mappings().all()
+            )
+            .mappings()
+            .all()
         ]
     exact: dict[tuple[str, str], MessageSnapshot] = {}
     by_id: dict[str, list[MessageSnapshot]] = {}
@@ -439,13 +445,17 @@ async def read_message_context_snapshots(
 
     async with _read_only_db_session() as session:
         anchor = (
-            await session.execute(
-                select(Messages.__table__).where(
-                    Messages.stream_id == stream_id,
-                    Messages.message_id == anchor_message_id,
+            (
+                await session.execute(
+                    select(Messages.__table__).where(
+                        Messages.stream_id == stream_id,
+                        Messages.message_id == anchor_message_id,
+                    )
                 )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         if anchor is None:
             return ()
 
@@ -471,7 +481,9 @@ async def read_message_context_snapshots(
                         .order_by(desc(Messages.time), desc(Messages.id))
                         .limit(before)
                     )
-                ).mappings().all()
+                )
+                .mappings()
+                .all()
             ]
             rows.extend(reversed(earlier))
         if after:
@@ -493,7 +505,9 @@ async def read_message_context_snapshots(
                         .order_by(Messages.time, Messages.id)
                         .limit(after)
                     )
-                ).mappings().all()
+                )
+                .mappings()
+                .all()
             )
 
         reply_to = (
@@ -503,13 +517,17 @@ async def read_message_context_snapshots(
         )
         if reply_to and not any(row.get("message_id") == reply_to for row in rows):
             reply_row = (
-                await session.execute(
-                    select(Messages.__table__).where(
-                        Messages.stream_id == stream_id,
-                        Messages.message_id == reply_to,
+                (
+                    await session.execute(
+                        select(Messages.__table__).where(
+                            Messages.stream_id == stream_id,
+                            Messages.message_id == reply_to,
+                        )
                     )
                 )
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
             if reply_row is not None:
                 rows.append(dict(reply_row))
 
@@ -523,6 +541,7 @@ __all__ = [
     "MigrationMessageCandidate",
     "MigrationPersonCandidate",
     "MigrationStreamCandidate",
+    "TaskNotFoundError",
     "VectorDatabase",
     "cancel_managed_task",
     "create_managed_task",

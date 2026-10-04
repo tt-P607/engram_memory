@@ -8,38 +8,41 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections import Counter, defaultdict
-from contextlib import closing
-from datetime import UTC, datetime
 import hashlib
 import json
 import math
-from pathlib import Path
 import re
 import shutil
 import sqlite3
 import sys
 import tempfile
-from time import perf_counter
 import tomllib
+from collections import Counter, defaultdict
+from contextlib import closing
+from datetime import UTC, datetime
+from pathlib import Path
+from time import perf_counter
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
-
 
 ROOT = next(
     parent
     for parent in Path(__file__).resolve().parents
     if (parent / "main.py").is_file()
 )
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if not __package__:
+    __package__ = ".".join(Path(__file__).resolve().relative_to(ROOT).parts[:-1])
 
 from sqlalchemy import select, text  # noqa: E402
 
 from src.app.plugin_system.api import llm_api, person_api  # noqa: E402
-from plugins.engram_memory.config import EngramMemoryConfig  # noqa: E402
-from plugins.engram_memory.vnext.doctor_service import DoctorService  # noqa: E402
-from plugins.engram_memory.vnext.domain import RetrievalQuery  # noqa: E402
-from plugins.engram_memory.vnext.enums import (  # noqa: E402
+
+from ..config import EngramMemoryConfig  # noqa: E402
+from ..vnext.doctor_service import DoctorService  # noqa: E402
+from ..vnext.domain import RetrievalQuery  # noqa: E402
+from ..vnext.enums import (  # noqa: E402
     ActorType,
     EvidenceSourceType,
     MemoryEventType,
@@ -50,7 +53,7 @@ from plugins.engram_memory.vnext.enums import (  # noqa: E402
     RevisionChangeReason,
     SubjectKind,
 )
-from plugins.engram_memory.vnext.models import (  # noqa: E402
+from ..vnext.models import (  # noqa: E402
     EvidenceModel,
     MemoryEventModel,
     MemoryModel,
@@ -62,13 +65,12 @@ from plugins.engram_memory.vnext.models import (  # noqa: E402
     RevisionEvidenceModel,
     VectorOutboxModel,
 )
-from plugins.engram_memory.vnext.repository import MemoryRepository  # noqa: E402
-from plugins.engram_memory.vnext.retrieval_service import RetrievalService  # noqa: E402
-from plugins.engram_memory.vnext.runtime import ChromaVectorSink  # noqa: E402
-from plugins.engram_memory.vnext.runtime_owner import ChromaVectorSearchBackend  # noqa: E402
-from plugins.engram_memory.vnext.schema import VNextSchema  # noqa: E402
-from plugins.engram_memory.vnext.vector_service import VectorIndexService  # noqa: E402
-
+from ..vnext.repository import MemoryRepository  # noqa: E402
+from ..vnext.retrieval_service import RetrievalService  # noqa: E402
+from ..vnext.runtime import ChromaVectorSink  # noqa: E402
+from ..vnext.runtime_owner import ChromaVectorSearchBackend  # noqa: E402
+from ..vnext.schema import VNextSchema  # noqa: E402
+from ..vnext.vector_service import VectorIndexService  # noqa: E402
 
 SCRIPT_VERSION = 2
 RETRIEVAL_SCHEMA_VERSION = "engram-vnext-2"
@@ -830,10 +832,18 @@ async def main() -> int:
             statuses = stats["target_statuses"]
             print("\nBooku → Engram 记忆迁移预览")
             print(f"待迁移记忆：{stats['records']} 条（Booku 记忆区）")
-            print(f"可用：{statuses.get('ACTIVE', 0)} 条；保持停用：{statuses.get('TOMBSTONED', 0)} 条")
-            print(f"跳过知识文档：{stats['knowledge_records_skipped']} 条（Booku 知识库）")
-            print(f"人物标识：{stats['person_refs_converted']} 条可关联；{stats['person_refs_unresolved']} 条待人工核对")
-            print("保留正文、创建时间及旧记录来源；不补造聊天消息或旧版本。来源副本校验通过。")
+            print(
+                f"可用：{statuses.get('ACTIVE', 0)} 条；保持停用：{statuses.get('TOMBSTONED', 0)} 条"
+            )
+            print(
+                f"跳过知识文档：{stats['knowledge_records_skipped']} 条（Booku 知识库）"
+            )
+            print(
+                f"人物标识：{stats['person_refs_converted']} 条可关联；{stats['person_refs_unresolved']} 条待人工核对"
+            )
+            print(
+                "保留正文、创建时间及旧记录来源；不补造聊天消息或旧版本。来源副本校验通过。"
+            )
         if args.preview:
             return 0
         if not records:

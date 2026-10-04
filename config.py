@@ -10,6 +10,38 @@ from .diary.config import DiaryConfig
 from .vnext.config_sections import VNextConfig
 
 
+@config_section("plugin", title="插件设置", tag="plugin")
+class PluginSection(SectionBase):
+    """插件级开关。"""
+
+    enabled: bool = Field(
+        default=True,
+        description="插件总开关",
+        label="启用插件",
+        tag="plugin",
+    )
+
+
+@config_section("storage", title="存储配置", tag="database")
+class StorageSection(SectionBase):
+    """vNext 数据库与向量索引路径。"""
+
+    vector_db_path: str = Field(
+        default="data/engram_memory/chroma",
+        description="向量数据库路径（ChromaDB）",
+        label="向量库路径",
+        input_type="text",
+        tag="file",
+    )
+    vnext_db_path: str = Field(
+        default="data/engram_memory/vnext.db",
+        description="正式记忆数据库路径",
+        label="vNext 数据库路径",
+        input_type="text",
+        tag="file",
+    )
+
+
 class EngramMemoryConfig(BaseConfig):
     """Engram Memory 连续记忆配置模型。"""
 
@@ -49,37 +81,13 @@ class EngramMemoryConfig(BaseConfig):
                 filtered_vnext["persona"] = filtered_persona
             filtered["vnext"] = filtered_vnext
 
+        diary = filtered.get("diary")
+        if isinstance(diary, dict):
+            filtered_diary = dict(diary)
+            filtered_diary.pop("recovery_messages", None)
+            filtered["diary"] = filtered_diary
+
         return super().from_dict(filtered)
-
-    @config_section("plugin", title="插件设置", tag="plugin")
-    class PluginSection(SectionBase):
-        """插件级开关。"""
-
-        enabled: bool = Field(
-            default=True,
-            description="插件总开关",
-            label="启用插件",
-            tag="plugin",
-        )
-
-    @config_section("storage", title="存储配置", tag="database")
-    class StorageSection(SectionBase):
-        """vNext 数据库与向量索引路径。"""
-
-        vector_db_path: str = Field(
-            default="data/engram_memory/chroma",
-            description="向量数据库路径（ChromaDB）",
-            label="向量库路径",
-            input_type="text",
-            tag="file",
-        )
-        vnext_db_path: str = Field(
-            default="data/engram_memory/vnext.db",
-            description="正式记忆数据库路径",
-            label="vNext 数据库路径",
-            input_type="text",
-            tag="file",
-        )
 
     plugin: PluginSection = Field(default_factory=PluginSection)
     storage: StorageSection = Field(default_factory=StorageSection)

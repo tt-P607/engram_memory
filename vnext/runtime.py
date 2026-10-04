@@ -123,9 +123,9 @@ def message_to_snapshot(message: MessageLike) -> MessageSnapshot:
         _message_value(message, "message_id") or _message_value(message, "id")
     )
     stream_id = _normalize_text(_message_value(message, "stream_id"))
-    text = _normalize_text(_message_value(message, "processed_plain_text")) or _normalize_text(
-        _message_value(message, "content")
-    )
+    text = _normalize_text(
+        _message_value(message, "processed_plain_text")
+    ) or _normalize_text(_message_value(message, "content"))
     if not message_id:
         raise ValueError("message.message_id 不能为空")
     if not stream_id:
@@ -161,9 +161,7 @@ def message_to_snapshot(message: MessageLike) -> MessageSnapshot:
         "sender_role": sender_role or None,
         "sender_id": _snapshot_value(_message_value(message, "sender_id")),
         "sender_name": _snapshot_value(_message_value(message, "sender_name")),
-        "sender_cardname": _snapshot_value(
-            _message_value(message, "sender_cardname")
-        ),
+        "sender_cardname": _snapshot_value(_message_value(message, "sender_cardname")),
         "platform": _snapshot_value(_message_value(message, "platform")),
         "message_type": _snapshot_value(_message_value(message, "message_type")),
         "reply_to": _snapshot_value(_message_value(message, "reply_to")),
@@ -249,9 +247,15 @@ class ChromaVectorSink(VectorSink):
         """由索引身份、模型身份和向量维度生成长度受限的集合名。"""
         import hashlib
 
-        if not index_id.strip() or not embedding_model_id.strip() or embedding_dimension <= 0:
+        if (
+            not index_id.strip()
+            or not embedding_model_id.strip()
+            or embedding_dimension <= 0
+        ):
             raise ValueError("索引物理参数无效")
-        model_token = hashlib.sha256(embedding_model_id.encode("utf-8")).hexdigest()[:12]
+        model_token = hashlib.sha256(embedding_model_id.encode("utf-8")).hexdigest()[
+            :12
+        ]
         index_token = hashlib.sha256(index_id.encode("utf-8")).hexdigest()[:12]
         return f"engram_vnext_{index_token}_{model_token}_{embedding_dimension}"
 
@@ -308,7 +312,9 @@ class ChromaVectorSink(VectorSink):
 
     def embedding_model_identity(self) -> str:
         """从当前模型任务解析唯一 Embedding 模型标识。"""
-        model_set = self._model_set or llm_api.get_model_set_by_task(self._embedding_task)
+        model_set = self._model_set or llm_api.get_model_set_by_task(
+            self._embedding_task
+        )
         if len(model_set) != 1 or not isinstance(model_set[0], Mapping):
             raise VectorSinkError("Embedding task 必须恰好配置一个模型")
         identity = model_set[0].get("model_identifier")
@@ -328,7 +334,9 @@ class ChromaVectorSink(VectorSink):
 
     async def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
         """通过一次公开 LLM 请求生成一批按输入顺序排列的向量。"""
-        if not texts or any(not isinstance(text, str) or not text.strip() for text in texts):
+        if not texts or any(
+            not isinstance(text, str) or not text.strip() for text in texts
+        ):
             raise ValueError("embedding texts 只能包含非空文本")
         try:
             model_set = self._model_set or llm_api.get_model_set_by_task(
@@ -341,9 +349,7 @@ class ChromaVectorSink(VectorSink):
             )
             send_result = request.send()
             response: object = (
-                await send_result
-                if inspect.isawaitable(send_result)
-                else send_result
+                await send_result if inspect.isawaitable(send_result) else send_result
             )
             embeddings = getattr(response, "embeddings", None)
         except Exception as error:  # noqa: BLE001
@@ -513,7 +519,11 @@ class VectorOutboxWorker:
             raise TypeError(
                 "service_or_schema 必须实现 VectorIndexServiceProtocol 或是 VNextSchema"
             )
-        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0:
+        if (
+            not isinstance(batch_size, int)
+            or isinstance(batch_size, bool)
+            or batch_size <= 0
+        ):
             raise ValueError("batch_size 必须是大于 0 的整数")
         if (
             isinstance(poll_interval_seconds, bool)

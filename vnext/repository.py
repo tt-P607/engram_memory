@@ -9,8 +9,8 @@ from sqlalchemy import select
 from src.app.plugin_system.api import person_api
 
 from .models import (
-    EvidenceModel,
     EvidenceMessageSnapshotModel,
+    EvidenceModel,
     MemoryEventModel,
     MemoryModel,
     MemoryRevisionModel,
@@ -35,7 +35,10 @@ class MemoryRepository:
         """读取正式记忆当前版本。"""
         statement = (
             select(MemoryRevisionModel)
-            .join(MemoryModel, MemoryModel.current_revision_id == MemoryRevisionModel.revision_id)
+            .join(
+                MemoryModel,
+                MemoryModel.current_revision_id == MemoryRevisionModel.revision_id,
+            )
             .where(MemoryModel.memory_id == memory_id)
         )
         async with self._schema.database.session() as session:
@@ -60,7 +63,10 @@ class MemoryRepository:
             conditions.append(RevisionEvidenceModel.revision_id == revision_id)
         statement = (
             select(EvidenceModel)
-            .join(RevisionEvidenceModel, RevisionEvidenceModel.evidence_id == EvidenceModel.evidence_id)
+            .join(
+                RevisionEvidenceModel,
+                RevisionEvidenceModel.evidence_id == EvidenceModel.evidence_id,
+            )
             .join(
                 MemoryRevisionModel,
                 MemoryRevisionModel.revision_id == RevisionEvidenceModel.revision_id,
@@ -178,13 +184,16 @@ class MemoryRepository:
             core_ids = {
                 row["person_id"]
                 for row in rows
-                if isinstance(row.get("person_id"), str)
-                and row["person_id"].strip()
+                if isinstance(row.get("person_id"), str) and row["person_id"].strip()
             }
             if "bot" in core_ids or len(core_ids) != 1:
                 return (person_id,)
             core_id = next(iter(core_ids))
-            if not isinstance(core_id, str) or core_id == person_id or not core_id.strip():
+            if (
+                not isinstance(core_id, str)
+                or core_id == person_id
+                or not core_id.strip()
+            ):
                 return (person_id,)
             if not any(
                 row.get("platform") == person_id.partition(":")[0]

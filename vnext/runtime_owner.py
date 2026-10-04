@@ -22,6 +22,7 @@ from .domain import MemoryChanged
 from .enums import VectorIndexStatus
 from .flashback_service import FlashbackService
 from .framework_bridge import (
+    TaskNotFoundError,
     cancel_managed_task,
     create_managed_task,
     get_managed_task,
@@ -113,7 +114,9 @@ class ChromaVectorSearchBackend(VectorSearchBackend):
             manifest.embedding_dimension,
         )
         results = await sink.query_scored_entries(texts[0][1], top_k)
-        return tuple((entry_id, score) for entry_id, score in results if entry_id in allowed_ids)
+        return tuple(
+            (entry_id, score) for entry_id, score in results if entry_id in allowed_ids
+        )
 
 
 class VNextRuntimeOwner:
@@ -156,7 +159,9 @@ class VNextRuntimeOwner:
         )
         self.persona_service = PersonaService(self.schema, persona_config=vnext.persona)
         self.persona_updater = PersonaUpdater(
-            self.persona_service, self.repository, max_concurrency=vnext.persona.max_concurrency,
+            self.persona_service,
+            self.repository,
+            max_concurrency=vnext.persona.max_concurrency,
         )
         self.vector_index = VectorIndexService(
             self.schema,
@@ -196,9 +201,10 @@ class VNextRuntimeOwner:
         if self._initialized:
             return
         try:
-            embedding_identity, embedding_dimension = (
-                await self.vector_sink.inspect_embedding_settings()
-            )
+            (
+                embedding_identity,
+                embedding_dimension,
+            ) = await self.vector_sink.inspect_embedding_settings()
             if embedding_identity != self._embedding_model_identity:
                 raise RuntimeError("Embedding task identity 在初始化期间发生变化")
             self.doctor = DoctorService(
@@ -210,6 +216,8 @@ class VNextRuntimeOwner:
             )
             self._schema_initialized = True
             await self.schema.initialize()
+            cleared_personas = await self.persona_service.clear_legacy_impressions()
+            logger.info(f"人物印象启动核对完成：归档并清理 {cleared_personas} 份旧稿")
             await self.vector_index.ensure_active_manifest(
                 embedding_identity,
                 embedding_dimension,
@@ -243,7 +251,12 @@ class VNextRuntimeOwner:
         for task_id in task_ids:
             try:
                 task_info = get_managed_task(task_id)
-            except Exception:  # noqa: BLE001
+            except TaskNotFoundError:
+                continue
+            except Exception as error:  # noqa: BLE001
+                logger.warning(
+                    f"读取待关闭的 vNext 托管任务失败: {type(error).__name__}: {error}"
+                )
                 continue
             task_infos.append(task_info)
             cancel_managed_task(task_id)
@@ -348,8 +361,15 @@ class VNextRuntimeOwner:
             if current_task is not None:
                 task_id = self._task_ids_by_task.get(current_task)
                 if task_id is not None:
-                    if self._flashback_task_ids.get(stream_id) == task_id and self._flashback_generations.get(stream_id) == generation:
-                        self._flashback_results[stream_id] = (candidates, turn_index, generation)
+                    if (
+                        self._flashback_task_ids.get(stream_id) == task_id
+                        and self._flashback_generations.get(stream_id) == generation
+                    ):
+                        self._flashback_results[stream_id] = (
+                            candidates,
+                            turn_index,
+                            generation,
+                        )
             return candidates
         finally:
             self._forget_current_task()
@@ -388,7 +408,14 @@ class VNextRuntimeOwner:
                 return ()
             try:
                 task_info = get_managed_task(task_id)
-            except Exception:  # noqa: BLE001
+            except TaskNotFoundError:
+                if self._flashback_task_ids.get(stream_id) == task_id:
+                    self._flashback_task_ids.pop(stream_id, None)
+                return ()
+            except Exception as error:  # noqa: BLE001
+                logger.warning(
+                    f"读取 vNext Flashback 预取任务失败: {type(error).__name__}: {error}"
+                )
                 if self._flashback_task_ids.get(stream_id) == task_id:
                     self._flashback_task_ids.pop(stream_id, None)
                 return ()
@@ -407,7 +434,10 @@ class VNextRuntimeOwner:
                 if current_task is not None and current_task.cancelling():
                     raise
                 return ()
-            except Exception:  # noqa: BLE001
+            except Exception as error:  # noqa: BLE001
+                logger.warning(
+                    f"vNext Flashback 预取失败: {type(error).__name__}: {error}"
+                )
                 return ()
             finally:
                 if self._flashback_task_ids.get(stream_id) == task_id:
@@ -474,7 +504,9 @@ class VNextRuntimeOwner:
             """按公开消息时间与 ID 生成稳定的 UTC 排序键。"""
             value = self._message_value(message, "time")
             if isinstance(value, datetime):
-                timestamp = value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+                timestamp = (
+                    value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+                )
             elif isinstance(value, (int, float)) and not isinstance(value, bool):
                 timestamp = datetime.fromtimestamp(float(value), tz=UTC)
             elif isinstance(value, str):
@@ -482,7 +514,11 @@ class VNextRuntimeOwner:
                     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
                 except ValueError:
                     parsed = datetime.min.replace(tzinfo=UTC)
-                timestamp = parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+                timestamp = (
+                    parsed.astimezone(UTC)
+                    if parsed.tzinfo
+                    else parsed.replace(tzinfo=UTC)
+                )
             else:
                 timestamp = datetime.min.replace(tzinfo=UTC)
             return timestamp, str(

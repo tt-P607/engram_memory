@@ -46,15 +46,23 @@ def _uses_memory_reminders(payloads: Sequence[LLMPayload]) -> bool:
 
 def _refresh_persona_payloads(payloads: list[LLMPayload], content: str) -> None:
     """移除自身旧印象块，并将完整当前印象放在首个 User。"""
-    user_indices = [index for index, payload in enumerate(payloads) if payload.role == ROLE.USER]
+    user_indices = [
+        index for index, payload in enumerate(payloads) if payload.role == ROLE.USER
+    ]
     for index in user_indices:
         payload = payloads[index]
-        kept = [part for part in payload.content if not _is_named_reminder(part, REMINDER_NAME)]
+        kept = [
+            part
+            for part in payload.content
+            if not _is_named_reminder(part, REMINDER_NAME)
+        ]
         if len(kept) != len(payload.content):
             payloads[index] = LLMPayload(ROLE.USER, kept)
     if content and user_indices:
         index = user_indices[0]
-        block = Text(f"<system_reminder>\n[{REMINDER_NAME}]\n{content}\n</system_reminder>")
+        block = Text(
+            f"<system_reminder>\n[{REMINDER_NAME}]\n{content}\n</system_reminder>"
+        )
         payloads[index] = LLMPayload(ROLE.USER, [block, *payloads[index].content])
 
 
@@ -69,7 +77,9 @@ class VNextPrivatePersonaEventHandler(BaseEventHandler):
     ]
 
     async def execute(
-        self, event_name: str, params: dict[str, Any],
+        self,
+        event_name: str,
+        params: dict[str, Any],
     ) -> tuple[EventDecision, dict[str, Any]]:
         """预载聊天流印象，并刷新实际 Actor 请求中的同名提醒。"""
         plugin = cast("EngramMemoryPlugin", self.plugin)
@@ -93,14 +103,18 @@ class VNextPrivatePersonaEventHandler(BaseEventHandler):
                 and stream_id.strip()
                 and _uses_memory_reminders(payloads)
             ):
-                content = await self._load_reminder(plugin, owner.persona_service, stream_id)
+                content = await self._load_reminder(
+                    plugin, owner.persona_service, stream_id
+                )
                 _refresh_persona_payloads(payloads, content)
                 params["payloads"] = payloads
         return EventDecision.SUCCESS, params
 
     @staticmethod
     async def _load_reminder(
-        plugin: EngramMemoryPlugin, service: PersonaService, stream_id: str,
+        plugin: EngramMemoryPlugin,
+        service: PersonaService,
+        stream_id: str,
     ) -> str:
         """按私聊流的准确核心人物 ID 读取当前印象，不生成或回退旧正文。"""
         info = await stream_api.get_stream_info(stream_id)
@@ -109,9 +123,14 @@ class VNextPrivatePersonaEventHandler(BaseEventHandler):
             person_id = info["person_id"]
             if isinstance(person_id, str) and person_id.strip():
                 snapshot = await service.get_persona(person_id)
-                if snapshot is not None and snapshot.is_current and snapshot.impression_text.strip():
+                if (
+                    snapshot is not None
+                    and snapshot.is_current
+                    and snapshot.impression_text.strip()
+                ):
                     impression = snapshot.impression_text.replace(
-                        "<system_reminder>", "&lt;system_reminder&gt;",
+                        "<system_reminder>",
+                        "&lt;system_reminder&gt;",
                     ).replace("</system_reminder>", "&lt;/system_reminder&gt;")
                     content = (
                         "## 当前私聊对象的人物印象\n"
@@ -122,7 +141,10 @@ class VNextPrivatePersonaEventHandler(BaseEventHandler):
                     )
         if content:
             prompt_api.add_stream_reminder(
-                stream_id, "actor", REMINDER_NAME, content,
+                stream_id,
+                "actor",
+                REMINDER_NAME,
+                content,
                 insert_type=prompt_api.SystemReminderInsertType.FIXED,
                 consume=prompt_api.SystemReminderConsumeType.FOREVER,
             )

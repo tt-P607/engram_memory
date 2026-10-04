@@ -52,7 +52,10 @@ class EngramMemoryPlugin(BasePlugin):
 
     def get_components(self) -> list[type]:
         """返回正式记忆查询工具、写操作、事件处理器、服务与管理路由。"""
-        if isinstance(self.config, EngramMemoryConfig) and not self.config.plugin.enabled:
+        if (
+            isinstance(self.config, EngramMemoryConfig)
+            and not self.config.plugin.enabled
+        ):
             return []
         return [
             VNextMemorySearchTool,
@@ -72,7 +75,10 @@ class EngramMemoryPlugin(BasePlugin):
 
     async def on_plugin_loaded(self) -> None:
         """初始化共享运行资源，刷新管理路由并注册记忆引导语。"""
-        if isinstance(self.config, EngramMemoryConfig) and not self.config.plugin.enabled:
+        if (
+            isinstance(self.config, EngramMemoryConfig)
+            and not self.config.plugin.enabled
+        ):
             return
         self._unloading = False
         self.runtime_owner = VNextRuntimeOwner(self)
@@ -119,7 +125,9 @@ class EngramMemoryPlugin(BasePlugin):
         self._flashback_reminder_streams.clear()
         for stream_id in self._persona_reminder_streams:
             try:
-                prompt_api.delete_stream_reminder(stream_id, "actor", PERSONA_REMINDER_NAME)
+                prompt_api.delete_stream_reminder(
+                    stream_id, "actor", PERSONA_REMINDER_NAME
+                )
             except Exception as error:  # noqa: BLE001
                 logger.warning(f"移除私聊人物印象 reminder 失败: {error}")
         self._persona_reminder_streams.clear()
@@ -134,5 +142,6 @@ class EngramMemoryPlugin(BasePlugin):
                 delete_owned_reminder("actor", "engram_memory_guide")
             except Exception as error:  # noqa: BLE001
                 logger.debug(f"移除 vNext 记忆引导语失败: {error}")
+
 
 __all__ = ["EngramMemoryPlugin"]

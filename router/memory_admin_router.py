@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
+from hashlib import sha256
 from ipaddress import ip_address
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
-from sqlalchemy import func, select, tuple_
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from sqlalchemy import func, or_, select, tuple_
 
 from src.app.plugin_system.api import database_api
 from src.app.plugin_system.api.message_api import PersonInfo
 from src.app.plugin_system.base import BaseRouter
 
-from ..vnext.enums import ActorType, MemoryStatus
+from ..vnext.enums import MemoryStatus
 from ..vnext.models import (
     EvidenceMessageLinkModel,
     EvidenceMessageSnapshotModel,
@@ -25,9 +26,16 @@ from ..vnext.models import (
     MemoryRevisionModel,
     MemoryRevisionParticipantModel,
     MemoryRevisionSubjectModel,
+    PersonaUpdateLogModel,
+)
+from ..vnext.persona_service import (
+    EMPTY_IMPRESSION,
+    MEMORY_FOOTNOTE_SEPARATOR,
+    MEMORY_REFERENCE,
+    MEMORY_REFERENCE_GROUP,
+    _format_memory_footnotes,
 )
 from ..vnext.runtime_owner import VNextRuntimeOwner
-from ..vnext.tool_service import ToolContext
 
 if TYPE_CHECKING:
     from src.app.plugin_system.base import BasePlugin
@@ -41,6 +49,44 @@ def _iso(value: datetime | None) -> str | None:
 def _enum(value: Any) -> str | None:
     """把 ORM 枚举转换为其持久化值。"""
     return value.value if value is not None else None
+
+
+def _person_view(person: PersonInfo) -> dict[str, Any]:
+    """区分平台昵称、最近记录的群名片和人物资料更新时间。"""
+    return {
+        "person_id": person.person_id,
+        "display_name": person.nickname or person.cardname or person.user_id,
+        "nickname": person.nickname,
+        "cardname": person.cardname,
+        "platform": person.platform,
+        "user_id": person.user_id,
+        "profile_updated_at": (
+            datetime.fromtimestamp(person.updated_at, UTC).isoformat()
+            if person.updated_at is not None
+            else None
+        ),
+    }
+
+
+def _impression_parts(impression: str) -> tuple[str, list[tuple[str, tuple[str, ...]]]]:
+    """拆分展示正文与尾注，保持保存的完整人物印象不变。"""
+    formatted = (
+        impression
+        if MEMORY_FOOTNOTE_SEPARATOR in impression
+        else _format_memory_footnotes(impression)
+    )
+    body, separator, tail = formatted.rpartition(MEMORY_FOOTNOTE_SEPARATOR)
+    if not separator:
+        return formatted, []
+    references: list[tuple[str, tuple[str, ...]]] = []
+    for line in tail.splitlines():
+        marker, space, content = line.partition(" ")
+        if not space or not MEMORY_REFERENCE_GROUP.fullmatch(content):
+            return impression, []
+        references.append(
+            (marker, tuple(dict.fromkeys(MEMORY_REFERENCE.findall(content))))
+        )
+    return body, references
 
 
 def _snapshot_text(payload: object) -> str | None:
@@ -85,6 +131,25 @@ class VNextMemoryAdminRouter(BaseRouter):
             return self._html_path().read_text(encoding="utf-8")
         except OSError as error:
             raise HTTPException(status_code=500, detail="管理页面暂不可用") from error
+
+    @staticmethod
+    def _people_query() -> database_api.QueryBuilder[PersonInfo]:
+        """构建不包含空正文和暂无印象占位的人物只读查询。"""
+        return database_api.query(PersonInfo).filter(
+            impression__isnull=False, impression__nin=["", EMPTY_IMPRESSION]
+        )
+
+    async def _person_names(self, person_ids: set[str]) -> dict[str, dict[str, Any]]:
+        """批量读取当前页关联人物的展示名称，不生成或更新人物。"""
+        if not person_ids:
+            return {}
+        people = cast(
+            list[PersonInfo],
+            await database_api.query(PersonInfo)
+            .filter(person_id__in=tuple(person_ids))
+            .all(),
+        )
+        return {person.person_id: _person_view(person) for person in people}
 
     async def _source_views(
         self,
@@ -186,7 +251,9 @@ class VNextMemoryAdminRouter(BaseRouter):
                 rows = (
                     await session.scalars(
                         select(MemoryRevisionParticipantModel)
-                        .where(MemoryRevisionParticipantModel.revision_id == revision_id)
+                        .where(
+                            MemoryRevisionParticipantModel.revision_id == revision_id
+                        )
                         .order_by(MemoryRevisionParticipantModel.participant_id)
                     )
                 ).all()
@@ -239,7 +306,9 @@ class VNextMemoryAdminRouter(BaseRouter):
             except ValueError:
                 local_hostname = hostname == "localhost"
             if not local_hostname:
-                return JSONResponse(status_code=403, content={"detail": "管理 API 仅接受本机地址"})
+                return JSONResponse(
+                    status_code=403, content={"detail": "管理 API 仅接受本机地址"}
+                )
             return await call_next(request)
 
         @app.get("/", response_class=HTMLResponse)
@@ -247,23 +316,39 @@ class VNextMemoryAdminRouter(BaseRouter):
             """返回不含数据的静态档案页。"""
             return self._load_html()
 
+        @app.get("/assets/icons.js")
+        async def icons() -> FileResponse:
+            """提供随插件打包的 Lucide 图标库，不请求外部资源。"""
+            return FileResponse(
+                self._html_path().with_name("lucide.min.js"),
+                media_type="application/javascript",
+            )
+
         @app.get("/api/status")
         async def status() -> dict[str, Any]:
             """返回正式记忆计数及自然闪回可用状态。"""
             owner = self._owner()
             async with owner.schema.database.session() as session:
-                revision_count = int(await session.scalar(select(func.count()).select_from(MemoryRevisionModel)) or 0)
+                revision_count = int(
+                    await session.scalar(
+                        select(func.count()).select_from(MemoryRevisionModel)
+                    )
+                    or 0
+                )
                 memory_rows = (
                     await session.execute(
-                        select(MemoryModel.status, func.count())
-                        .group_by(MemoryModel.status)
+                        select(MemoryModel.status, func.count()).group_by(
+                            MemoryModel.status
+                        )
                     )
                 ).all()
             flashback_enabled = owner.config.vnext.flashback.enabled
             flashback_threshold = await owner.flashback.active_threshold()
             flashback_limit = owner.config.vnext.flashback.max_memories
             flashback_effective = (
-                flashback_enabled and flashback_limit > 0 and flashback_threshold is not None
+                flashback_enabled
+                and flashback_limit > 0
+                and flashback_threshold is not None
             )
             if not flashback_enabled:
                 flashback_reason = "配置中的自动闪回开关已关闭。"
@@ -272,9 +357,12 @@ class VNextMemoryAdminRouter(BaseRouter):
             elif flashback_threshold is None:
                 flashback_reason = "配置已开启，当前索引尚未设置经过实测的相关性门槛，自动注入暂不执行；主动检索仍可使用。"
             else:
-                flashback_reason = "自动闪回已具备运行条件；每次仍需通过相关性、冷却及耗时检查。"
+                flashback_reason = (
+                    "自动闪回已具备运行条件；每次仍需通过相关性、冷却及耗时检查。"
+                )
             return {
                 "ok": True,
+                "persona_count": await self._people_query().count(),
                 "revision_count": revision_count,
                 "memory_counts": {
                     _enum(item): int(count) for item, count in memory_rows
@@ -292,38 +380,15 @@ class VNextMemoryAdminRouter(BaseRouter):
             q: str = Query(default="", max_length=200),
             status_filter: str = Query(default="ACTIVE", alias="status", max_length=24),
             limit: int = Query(default=30, ge=1, le=100),
+            page: int = Query(default=1, ge=1),
         ) -> dict[str, Any]:
-            """按正文检索或按状态浏览正式记忆。"""
+            """按标题、正文或 ID 筛选正式记忆，并返回稳定排序的分页及总数。"""
             owner = self._owner()
             normalized_query = q.strip()
             if status_filter != "ALL" and status_filter not in {
                 item.value for item in MemoryStatus
             }:
                 raise HTTPException(status_code=422, detail="记忆状态无效")
-            if normalized_query:
-                hits = await owner.tools.memory_search(
-                    normalized_query,
-                    ToolContext(actor_type=ActorType.ADMIN),
-                    limit=limit,
-                )
-                items = [
-                    {
-                        "memory_id": hit["memory_id"],
-                        "status": hit["status"],
-                        "title": hit["title"],
-                        "preview": hit["current_content_preview"],
-                        "memory_kind": hit["memory_kind"],
-                        "subject": hit["subject"],
-                        "last_experienced_at": _iso(
-                            cast(datetime | None, hit["last_experienced_at"])
-                        ),
-                        "matched_by": hit["matched_by"],
-                    }
-                    for hit in hits
-                    if status_filter == "ALL" or hit["status"] == status_filter
-                ]
-                return {"ok": True, "items": items}
-
             statement = (
                 select(MemoryModel, MemoryRevisionModel, MemoryRevisionSubjectModel)
                 .join(
@@ -332,17 +397,57 @@ class VNextMemoryAdminRouter(BaseRouter):
                 )
                 .outerjoin(
                     MemoryRevisionSubjectModel,
-                    MemoryRevisionSubjectModel.revision_id == MemoryModel.current_revision_id,
+                    MemoryRevisionSubjectModel.revision_id
+                    == MemoryModel.current_revision_id,
                 )
-                .order_by(MemoryModel.updated_at.desc(), MemoryModel.memory_id)
-                .limit(limit)
             )
             if status_filter != "ALL":
-                statement = statement.where(MemoryModel.status == MemoryStatus(status_filter))
+                statement = statement.where(
+                    MemoryModel.status == MemoryStatus(status_filter)
+                )
+            if normalized_query:
+                statement = statement.where(
+                    or_(
+                        MemoryRevisionModel.title.contains(
+                            normalized_query, autoescape=True
+                        ),
+                        MemoryRevisionModel.content.contains(
+                            normalized_query, autoescape=True
+                        ),
+                        MemoryModel.memory_id.contains(
+                            normalized_query, autoescape=True
+                        ),
+                    )
+                )
             async with owner.schema.database.session() as session:
-                rows = (await session.execute(statement)).all()
+                total = int(
+                    await session.scalar(
+                        select(func.count()).select_from(statement.subquery())
+                    )
+                    or 0
+                )
+                rows = (
+                    await session.execute(
+                        statement.order_by(
+                            MemoryModel.updated_at.desc(), MemoryModel.memory_id
+                        )
+                        .offset((page - 1) * limit)
+                        .limit(limit)
+                    )
+                ).all()
+            names = await self._person_names(
+                {
+                    subject.person_id
+                    for _, _, subject in rows
+                    if subject and subject.person_id
+                }
+            )
             return {
                 "ok": True,
+                "total": total,
+                "page": page,
+                "page_size": limit,
+                "pages": (total + limit - 1) // limit,
                 "items": [
                     {
                         "memory_id": memory.memory_id,
@@ -356,6 +461,7 @@ class VNextMemoryAdminRouter(BaseRouter):
                                 "person_id": subject.person_id,
                                 "subject_key": subject.subject_key,
                                 "subject_label": subject.subject_label,
+                                **names.get(subject.person_id or "", {}),
                             }
                             if subject
                             else None
@@ -409,6 +515,21 @@ class VNextMemoryAdminRouter(BaseRouter):
                     }
                     for source in await self._source_views(owner, revision_evidence)
                 )
+            people_ids = {
+                person["person_id"]
+                for revision in revision_views
+                for person in ([revision["subject"]] if revision["subject"] else [])
+                + revision["participants"]
+                if person.get("person_id")
+            }
+            names = await self._person_names(people_ids)
+            for revision in revision_views:
+                if revision["subject"]:
+                    revision["subject"].update(
+                        names.get(revision["subject"].get("person_id"), {})
+                    )
+                for participant in revision["participants"]:
+                    participant.update(names.get(participant.get("person_id"), {}))
             current = await owner.repository.get_current_revision(memory_id)
             async with owner.schema.database.session() as session:
                 relations = (
@@ -420,9 +541,36 @@ class VNextMemoryAdminRouter(BaseRouter):
                                 | (MemoryRelationModel.target_memory_id == memory_id)
                             )
                         )
-                        .order_by(MemoryRelationModel.created_at, MemoryRelationModel.relation_id)
+                        .order_by(
+                            MemoryRelationModel.created_at,
+                            MemoryRelationModel.relation_id,
+                        )
                     )
                 ).all()
+                related_ids = {
+                    relation.target_memory_id
+                    if relation.source_memory_id == memory_id
+                    else relation.source_memory_id
+                    for relation in relations
+                }
+                related_rows = (
+                    (
+                        await session.execute(
+                            select(MemoryModel.memory_id, MemoryRevisionModel.title)
+                            .join(
+                                MemoryRevisionModel,
+                                MemoryRevisionModel.revision_id
+                                == MemoryModel.current_revision_id,
+                            )
+                            .where(MemoryModel.memory_id.in_(related_ids))
+                        )
+                    ).all()
+                    if related_ids
+                    else []
+                )
+                related_titles = {
+                    related_id: title for related_id, title in related_rows
+                }
             return {
                 "ok": True,
                 "item": {
@@ -445,6 +593,11 @@ class VNextMemoryAdminRouter(BaseRouter):
                                 else relation.source_memory_id
                             ),
                             "relation_type": _enum(relation.relation_type),
+                            "related_title": related_titles.get(
+                                relation.target_memory_id
+                                if relation.source_memory_id == memory_id
+                                else relation.source_memory_id
+                            ),
                             "reason": relation.reason,
                             "created_at": _iso(relation.created_at),
                             "retracted_at": _iso(relation.retracted_at),
@@ -458,41 +611,125 @@ class VNextMemoryAdminRouter(BaseRouter):
         async def list_personas(
             q: str = Query(default="", max_length=200),
             limit: int = Query(default=60, ge=1, le=100),
+            page: int = Query(default=1, ge=1),
+            sort: str = Query(default="recent", pattern="^(recent|name)$"),
         ) -> dict[str, Any]:
-            """浏览核心数据库人物印象及人物 ID。"""
-            people: dict[str, PersonInfo] = {}
-            search_fields = ("person_id", "nickname", "cardname", "impression") if q.strip() else (None,)
-            for field in search_fields:
-                query = database_api.query(PersonInfo).filter(
-                    impression__isnull=False, impression__ne="",
+            """按名称、平台账号或正文筛选人物，返回无重复分页和真实总数。"""
+            query = self._people_query()
+            normalized = q.strip()
+            if normalized:
+                matching_ids = select(PersonInfo.person_id).where(
+                    or_(
+                        PersonInfo.person_id.contains(normalized, autoescape=True),
+                        PersonInfo.user_id.contains(normalized, autoescape=True),
+                        PersonInfo.nickname.contains(normalized, autoescape=True),
+                        PersonInfo.cardname.contains(normalized, autoescape=True),
+                        PersonInfo.impression.contains(normalized, autoescape=True),
+                    )
                 )
-                if field is not None:
-                    query = query.filter(**{f"{field}__like": f"%{q.strip()}%"})
-                rows = cast(
-                    list[PersonInfo],
-                    await query.order_by("-updated_at", "person_id").limit(limit).all(),
-                )
-                people.update((row.person_id, row) for row in rows)
-            personas = sorted(
-                people.values(), key=lambda row: (-(row.updated_at or 0), row.person_id),
-            )[:limit]
+                query = query.filter(person_id__in=matching_ids)
+            total = await query.count()
+            order = (
+                ("nickname", "person_id")
+                if sort == "name"
+                else ("-updated_at", "person_id")
+            )
+            personas = cast(
+                list[PersonInfo],
+                await query.order_by(*order)
+                .offset((page - 1) * limit)
+                .limit(limit)
+                .all(),
+            )
             return {
                 "ok": True,
                 "storage": "core.person_info.impression",
+                "total": total,
+                "page": page,
+                "page_size": limit,
+                "pages": (total + limit - 1) // limit,
                 "items": [
                     {
-                        "person_id": item.person_id,
-                        "display_name": item.cardname or item.nickname,
-                        "impression": item.impression,
-                        "created_at": (
-                            datetime.fromtimestamp(item.first_interaction).astimezone().isoformat()
-                            if item.first_interaction is not None else None
-                        ),
-                        "updated_at": (
-                            datetime.fromtimestamp(item.updated_at).astimezone().isoformat()
-                            if item.updated_at is not None else None
-                        ),
+                        **_person_view(item),
+                        "preview": _impression_parts(item.impression or "")[0][:180],
                     }
                     for item in personas
                 ],
+            }
+
+        @app.get("/api/personas/{person_id}")
+        async def get_persona(person_id: str) -> dict[str, Any]:
+            """读取单人人物印象、可跳转的标题化依据和独立的保存时间。"""
+            owner = self._owner()
+            person = await owner.persona_service.get_core_person(person_id)
+            if person is None:
+                raise HTTPException(status_code=404, detail="人物不存在")
+            impression = person.impression or ""
+            body, references = _impression_parts(impression)
+            memory_ids = {memory_id for _, ids in references for memory_id in ids}
+            async with owner.schema.database.session() as session:
+                rows = (
+                    (
+                        await session.execute(
+                            select(
+                                MemoryModel.memory_id,
+                                MemoryModel.status,
+                                MemoryRevisionModel.title,
+                                MemoryRevisionModel.content,
+                            )
+                            .join(
+                                MemoryRevisionModel,
+                                MemoryRevisionModel.revision_id
+                                == MemoryModel.current_revision_id,
+                            )
+                            .where(MemoryModel.memory_id.in_(memory_ids))
+                        )
+                    ).all()
+                    if memory_ids
+                    else []
+                )
+                saved_at = await session.scalar(
+                    select(func.max(PersonaUpdateLogModel.created_at)).where(
+                        PersonaUpdateLogModel.person_id == person.person_id,
+                        PersonaUpdateLogModel.new_content_hash
+                        == sha256(impression.encode()).hexdigest(),
+                        PersonaUpdateLogModel.impression_text == impression,
+                        PersonaUpdateLogModel.revision_no.is_not(None),
+                    )
+                )
+            memories = {
+                memory_id: {
+                    "memory_id": memory_id,
+                    "title": title,
+                    "status": _enum(status),
+                    "preview": content[:180],
+                    "exists": True,
+                }
+                for memory_id, status, title, content in rows
+            }
+            return {
+                "ok": True,
+                "item": {
+                    **_person_view(person),
+                    "impression": impression,
+                    "impression_body": body,
+                    "impression_updated_at": _iso(saved_at),
+                    "references": [
+                        {
+                            "marker": marker,
+                            "memories": [
+                                memories.get(
+                                    memory_id,
+                                    {
+                                        "memory_id": memory_id,
+                                        "title": "记忆不存在",
+                                        "exists": False,
+                                    },
+                                )
+                                for memory_id in ids
+                            ],
+                        }
+                        for marker, ids in references
+                    ],
+                },
             }

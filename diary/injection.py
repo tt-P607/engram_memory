@@ -28,7 +28,8 @@ def _is_diary_block(part: object) -> bool:
 def _contains_diary_block(payloads: Sequence[LLMPayload]) -> bool:
     """判断请求 payload 是否已由本插件的 Actor reminder opt in。"""
     return any(
-        payload.role == ROLE.USER and any(_is_diary_block(part) for part in payload.content)
+        payload.role == ROLE.USER
+        and any(_is_diary_block(part) for part in payload.content)
         for payload in payloads
     )
 

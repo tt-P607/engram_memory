@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from collections.abc import Sequence
 from uuid import uuid4
 
 from sqlalchemy import case, select, update
@@ -156,7 +156,8 @@ class VectorIndexService:
                         select(MemoryRetrievalEntryModel)
                         .join(
                             MemoryModel,
-                            MemoryModel.memory_id == MemoryRetrievalEntryModel.memory_id,
+                            MemoryModel.memory_id
+                            == MemoryRetrievalEntryModel.memory_id,
                         )
                         .where(MemoryModel.status == MemoryStatus.ACTIVE)
                     )
@@ -199,10 +200,7 @@ class VectorIndexService:
                     outbox.operation is OutboxOperation.UPSERT
                     and entry is not None
                     and outbox.content_hash == entry.content_hash
-                ) or (
-                    outbox.operation is OutboxOperation.DELETE
-                    and entry is None
-                )
+                ) or (outbox.operation is OutboxOperation.DELETE and entry is None)
                 if not satisfied:
                     continue
                 outbox.index_id = index_id
@@ -235,7 +233,9 @@ class VectorIndexService:
         if outbox_ids is not None:
             if not outbox_ids:
                 return ()
-            if any(not isinstance(item, str) or not item.strip() for item in outbox_ids):
+            if any(
+                not isinstance(item, str) or not item.strip() for item in outbox_ids
+            ):
                 raise ValueError("outbox_ids 只能包含非空字符串")
         succeeded: list[str] = []
         async with self._schema.database.session() as session:
@@ -261,9 +261,8 @@ class VectorIndexService:
                     updated_at=datetime.now(UTC),
                 )
             )
-            pending_statement = (
-                select(VectorOutboxModel.outbox_id)
-                .where(VectorOutboxModel.status == OutboxStatus.PENDING)
+            pending_statement = select(VectorOutboxModel.outbox_id).where(
+                VectorOutboxModel.status == OutboxStatus.PENDING
             )
             if index_id is not None:
                 pending_statement = pending_statement.where(
@@ -276,9 +275,9 @@ class VectorIndexService:
             pending_ids = tuple(
                 (
                     await session.scalars(
-                        pending_statement
-                        .order_by(VectorOutboxModel.created_at, VectorOutboxModel.outbox_id)
-                        .limit(limit)
+                        pending_statement.order_by(
+                            VectorOutboxModel.created_at, VectorOutboxModel.outbox_id
+                        ).limit(limit)
                     )
                 ).all()
             )
@@ -289,7 +288,9 @@ class VectorIndexService:
                 active_manifest = (
                     await session.scalars(
                         select(VectorIndexManifestModel)
-                        .where(VectorIndexManifestModel.status == VectorIndexStatus.ACTIVE)
+                        .where(
+                            VectorIndexManifestModel.status == VectorIndexStatus.ACTIVE
+                        )
                         .order_by(VectorIndexManifestModel.created_at.desc())
                     )
                 ).first()
@@ -335,7 +336,9 @@ class VectorIndexService:
                 )
                 if outbox.index_id is None and target_index is None:
                     outbox.status = OutboxStatus.PENDING
-                    outbox.last_error = "没有 ACTIVE Vector Manifest，等待索引 bootstrap"
+                    outbox.last_error = (
+                        "没有 ACTIVE Vector Manifest，等待索引 bootstrap"
+                    )
                     outbox.claim_token = None
                     outbox.updated_at = datetime.now(UTC)
                     continue
@@ -460,7 +463,9 @@ class VectorIndexService:
                 return
             try:
                 await target_sink.upsert_many(
-                    tuple(action.upsert for action in batch if action.upsert is not None)
+                    tuple(
+                        action.upsert for action in batch if action.upsert is not None
+                    )
                 )
             except Exception as error:  # noqa: BLE001
                 for action in batch:
@@ -529,7 +534,9 @@ class VectorIndexService:
                     await session.scalars(
                         select(VectorOutboxModel)
                         .where(VectorOutboxModel.status == OutboxStatus.FAILED)
-                        .order_by(VectorOutboxModel.updated_at, VectorOutboxModel.outbox_id)
+                        .order_by(
+                            VectorOutboxModel.updated_at, VectorOutboxModel.outbox_id
+                        )
                     )
                 ).all()
             )
@@ -539,7 +546,9 @@ class VectorIndexService:
                 target = (
                     manifests.get(outbox.index_id)
                     if outbox.index_id is not None
-                    else active_manifests[0] if len(active_manifests) == 1 else None
+                    else active_manifests[0]
+                    if len(active_manifests) == 1
+                    else None
                 )
                 if (
                     target is None
@@ -630,8 +639,7 @@ class VectorIndexService:
                     await session.scalars(
                         select(VectorIndexManifestModel)
                         .where(
-                            VectorIndexManifestModel.status
-                            == VectorIndexStatus.ACTIVE
+                            VectorIndexManifestModel.status == VectorIndexStatus.ACTIVE
                         )
                         .order_by(VectorIndexManifestModel.created_at.desc())
                     )
@@ -760,17 +768,16 @@ class VectorIndexService:
                     )
                 ).all()
             )
-            if (
-                any(row.status is not OutboxStatus.DONE for row in target_rows)
-                or any(
-                    row.embedding_model_id != manifest.embedding_model_id
-                    for row in target_rows
-                )
+            if any(row.status is not OutboxStatus.DONE for row in target_rows) or any(
+                row.embedding_model_id != manifest.embedding_model_id
+                for row in target_rows
             ):
                 manifest.status = VectorIndexStatus.FAILED
                 return
             latest_by_entry: dict[str, VectorOutboxModel] = {}
-            for row in sorted(target_rows, key=lambda item: (item.created_at, item.outbox_id)):
+            for row in sorted(
+                target_rows, key=lambda item: (item.created_at, item.outbox_id)
+            ):
                 latest_by_entry[row.object_id] = row
             active_entries = tuple(
                 (
@@ -778,7 +785,8 @@ class VectorIndexService:
                         select(MemoryRetrievalEntryModel)
                         .join(
                             MemoryModel,
-                            MemoryModel.memory_id == MemoryRetrievalEntryModel.memory_id,
+                            MemoryModel.memory_id
+                            == MemoryRetrievalEntryModel.memory_id,
                         )
                         .where(MemoryModel.status == MemoryStatus.ACTIVE)
                     )
@@ -810,9 +818,8 @@ class VectorIndexService:
                 physical_entry_ids = await target_sink.entry_ids()
             except Exception:
                 physical_entry_ids = None
-            if (
-                physical_entry_ids is None
-                or frozenset(physical_entry_ids) != frozenset(active_entry_ids)
+            if physical_entry_ids is None or frozenset(physical_entry_ids) != frozenset(
+                active_entry_ids
             ):
                 # 物理入口不可查询或与正式检索入口不一致时，不能激活派生索引。
                 manifest.status = VectorIndexStatus.FAILED
@@ -872,7 +879,11 @@ class VectorIndexService:
                 (
                     await session.scalars(
                         select(MemoryRetrievalEntryModel)
-                        .join(MemoryModel, MemoryModel.memory_id == MemoryRetrievalEntryModel.memory_id)
+                        .join(
+                            MemoryModel,
+                            MemoryModel.memory_id
+                            == MemoryRetrievalEntryModel.memory_id,
+                        )
                         .where(MemoryModel.status == MemoryStatus.ACTIVE)
                     )
                 ).all()
@@ -929,7 +940,9 @@ class VectorIndexService:
                     await session.scalars(
                         select(VectorOutboxModel)
                         .where(VectorOutboxModel.index_id == index_id)
-                        .order_by(VectorOutboxModel.created_at, VectorOutboxModel.outbox_id)
+                        .order_by(
+                            VectorOutboxModel.created_at, VectorOutboxModel.outbox_id
+                        )
                     )
                 ).all()
             )
@@ -942,7 +955,8 @@ class VectorIndexService:
                         select(MemoryRetrievalEntryModel)
                         .join(
                             MemoryModel,
-                            MemoryModel.memory_id == MemoryRetrievalEntryModel.memory_id,
+                            MemoryModel.memory_id
+                            == MemoryRetrievalEntryModel.memory_id,
                         )
                         .where(MemoryModel.status == MemoryStatus.ACTIVE)
                     )
