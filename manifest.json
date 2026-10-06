@@ -21,6 +21,7 @@
     { "component_type": "event_handler", "component_name": "memory_changed", "dependencies": [] },
     { "component_type": "event_handler", "component_name": "vnext_flashback_injector", "dependencies": [] },
     { "component_type": "event_handler", "component_name": "private_persona", "dependencies": [] },
+    { "component_type": "event_handler", "component_name": "group_persona", "dependencies": [] },
     { "component_type": "event_handler", "component_name": "chat_diary", "dependencies": [] },
     { "component_type": "router", "component_name": "vnext_doctor", "dependencies": [] },
     { "component_type": "router", "component_name": "memory_admin", "dependencies": [] }
